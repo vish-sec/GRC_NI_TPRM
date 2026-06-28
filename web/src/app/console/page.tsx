@@ -17,6 +17,8 @@ import {
   Gavel,
   AlertTriangle,
   Menu,
+  Loader2,
+  X,
 } from "lucide-react";
 import { CONTROLS, FRAMEWORKS, VENDOR } from "@/data/seed";
 import { BASELINE_CONTROLS } from "@/data/baseline";
@@ -54,6 +56,11 @@ export default function Console() {
   // Off-canvas navigation drawer (small screens only).
   const [navOpen, setNavOpen] = useState(false);
 
+  // Send-back-for-remediation modal.
+  const [sendBackOpen, setSendBackOpen] = useState(false);
+  const [sendBackComment, setSendBackComment] = useState("");
+  const [sendBackSaving, setSendBackSaving] = useState(false);
+
   // Override form (per-control verdict override).
   const [overrideOpen, setOverrideOpen] = useState(false);
   const [ovVerdict, setOvVerdict] = useState<Verdict>("Compliant");
@@ -71,6 +78,7 @@ export default function Console() {
         const me = await meRes.json();
         const role = me.session?.role;
         if (role !== "assessor" && role !== "root") { router.push("/login"); return; }
+        if (role === "root") { router.replace("/admin"); return; }
         const r = await fetch("/api/vendors");
         if (!r.ok) throw new Error(await errorMessage(r, "Could not load the vendor list."));
         if (!cancelled) { setVendors((await r.json()).vendors); setLoaded(true); }
@@ -202,22 +210,57 @@ export default function Console() {
     }
   }
 
-  // Return the current finding to the vendor for remediation.
-  async function sendBack() {
+  // Open the send-back modal with an AI-generated comment pre-filled.
+  function sendBack() {
     const r = results[selected];
     if (!r) return;
+    const recs = r.recommendations.slice(0, 4).map((rec) => `  • ${rec}`).join("\n");
+    const comment = [
+      `Control ${selected} — ${control?.question ?? selected}`,
+      "",
+      `Verdict: Non-Compliant${r.risk && r.risk !== "None" ? ` | Risk: ${r.risk}` : ""}`,
+      "",
+      r.riskStatement && r.riskStatement !== "—" ? r.riskStatement : null,
+      recs ? `Required actions:\n${recs}` : null,
+      "",
+      "Please address the above issues, attach updated evidence, and resubmit this control.",
+    ]
+      .filter((l) => l !== null)
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    setSendBackComment(comment);
+    setSendBackOpen(true);
+  }
+
+  // Confirm and submit the send-back after assessor validates/edits the comment.
+  async function confirmSendBack() {
+    const r = results[selected];
+    if (!r) return;
+    setSendBackSaving(true);
     try {
       const res = await fetch("/api/review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ vendorId, controlId: selected, verdict: r.verdict, risk: r.risk, riskStatement: r.riskStatement, recommendations: r.recommendations }),
+        body: JSON.stringify({
+          vendorId,
+          controlId: selected,
+          verdict: r.verdict,
+          risk: r.risk,
+          riskStatement: r.riskStatement,
+          recommendations: r.recommendations,
+          note: sendBackComment.trim(),
+        }),
       });
       if (!res.ok) throw new Error(await errorMessage(res, "Could not send this finding back."));
       const s = await fetch(`/api/submission?vendorId=${encodeURIComponent(vendorId)}`);
       if (s.ok) setSubmission(await s.json());
+      setSendBackOpen(false);
       toast.success("Finding returned to vendor for remediation.");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not send this finding back.");
+    } finally {
+      setSendBackSaving(false);
     }
   }
 
@@ -785,6 +828,76 @@ export default function Console() {
 
         {/* Evidence viewer — real modal dialog */}
         <EvidenceDialog view={evidenceView} onClose={() => setEvidenceView(null)} />
+
+        {/* Send-back-for-remediation modal */}
+        <AnimatePresence>
+          {sendBackOpen && (
+            <motion.div
+              className="fixed inset-0 z-50 grid place-items-center p-4"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.18 }}
+            >
+              <div
+                className="absolute inset-0 bg-bg/70 backdrop-blur-sm"
+                onClick={() => setSendBackOpen(false)}
+                aria-hidden="true"
+              />
+              <motion.div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="sendback-title"
+                initial={{ opacity: 0, scale: 0.97, y: 8 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.97 }}
+                transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                className="glass relative z-10 w-full max-w-xl rounded-2xl p-5 shadow-glow"
+              >
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <h3 id="sendback-title" className="text-sm font-semibold">↩ Return for Remediation</h3>
+                  <button
+                    onClick={() => setSendBackOpen(false)}
+                    aria-label="Close"
+                    className="grid h-7 w-7 place-items-center rounded-lg border border-border text-muted hover:text-fg"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                <p className="mb-3 text-xs text-muted">
+                  The comment below was generated from the AI finding. Review it, edit if needed, then confirm to send it to the vendor.
+                </p>
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-muted">
+                    Comment to vendor <span className="text-danger">*</span>
+                  </span>
+                  <textarea
+                    value={sendBackComment}
+                    onChange={(e) => setSendBackComment(e.target.value)}
+                    rows={9}
+                    className="w-full rounded-xl border border-border bg-surface/60 px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-warn"
+                  />
+                </label>
+                <div className="mt-4 flex items-center gap-3">
+                  <button
+                    onClick={confirmSendBack}
+                    disabled={sendBackSaving || !sendBackComment.trim()}
+                    className="inline-flex items-center gap-2 rounded-xl border border-warn/60 bg-warn/15 px-4 py-2 text-sm font-semibold text-warn transition hover:brightness-110 disabled:opacity-60"
+                  >
+                    {sendBackSaving ? <Loader2 size={15} className="animate-spin" /> : <span>↩</span>}
+                    {sendBackSaving ? "Sending…" : "Confirm & Send"}
+                  </button>
+                  <button
+                    onClick={() => setSendBackOpen(false)}
+                    className="rounded-xl border border-border px-4 py-2 text-sm font-medium text-muted hover:text-fg"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <Toaster toasts={toast.toasts} onDismiss={toast.dismiss} />
       </main>

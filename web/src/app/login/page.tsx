@@ -37,7 +37,7 @@ export default function Login() {
       }
       const { session } = await res.json();
       const landing: Record<string, string> = { root: "/admin", customer: "/customer", assessor: "/console", vendor: "/vendor" };
-      router.push(landing[session.role] ?? "/console");
+      router.replace(landing[session.role] ?? "/console");
     } catch {
       setError("Network error — could not reach the server. Please try again.");
     } finally {

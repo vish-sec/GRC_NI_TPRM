@@ -118,6 +118,106 @@ function postureTone(pct: number): string {
 }
 
 /* ------------------------------------------------------------------ */
+/* Chart helpers                                                       */
+/* ------------------------------------------------------------------ */
+
+function polarToCartesian(cx: number, cy: number, r: number, deg: number) {
+  const rad = ((deg - 90) * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+function donutArc(cx: number, cy: number, ro: number, ri: number, s: number, e: number) {
+  const p1 = polarToCartesian(cx, cy, ro, s);
+  const p2 = polarToCartesian(cx, cy, ro, e);
+  const p3 = polarToCartesian(cx, cy, ri, e);
+  const p4 = polarToCartesian(cx, cy, ri, s);
+  const lg = e - s > 180 ? 1 : 0;
+  return `M ${p1.x} ${p1.y} A ${ro} ${ro} 0 ${lg} 1 ${p2.x} ${p2.y} L ${p3.x} ${p3.y} A ${ri} ${ri} 0 ${lg} 0 ${p4.x} ${p4.y} Z`;
+}
+
+const STATUS_SEGMENTS = [
+  { label: "Good / Satisfactory", cssVar: "ok", match: (r: string) => r === "Good" || r === "Satisfactory" },
+  { label: "Needs Improvement",   cssVar: "warn",   match: (r: string) => r === "Needs Improvement" },
+  { label: "Unsatisfactory",      cssVar: "danger",  match: (r: string) => r === "Unsatisfactory" },
+  { label: "Unrated",             cssVar: "muted",   match: (r: string) => !["Good","Satisfactory","Needs Improvement","Unsatisfactory"].includes(r) },
+];
+
+const TIER_BARS = [
+  { label: "Critical", cssVar: "danger" },
+  { label: "High",     cssVar: "warn"   },
+  { label: "Medium",   cssVar: "brand"  },
+  { label: "Low",      cssVar: "ok"     },
+  { label: "Unrated",  cssVar: "muted"  },
+];
+
+function ComplianceDonut({ rows }: { rows: CustomerRow[] }) {
+  const total = rows.length;
+  const buckets = STATUS_SEGMENTS.map((s) => ({ ...s, count: rows.filter((r) => s.match(r.rating)).length })).filter((b) => b.count > 0);
+
+  let angle = 0;
+  const segments = buckets.map((b) => {
+    const span = (b.count / total) * 358;
+    const seg = { ...b, start: angle, end: angle + span };
+    angle += span + (360 - 358) / (buckets.length || 1);
+    return seg;
+  });
+
+  return (
+    <div className="glass rounded-2xl p-5">
+      <h3 className="mb-4 text-sm font-semibold">Compliance Status</h3>
+      <div className="flex items-center gap-5">
+        <svg width={120} height={120} viewBox="0 0 120 120" className="shrink-0">
+          {segments.map((seg, i) => (
+            <path key={i} d={donutArc(60, 60, 52, 32, seg.start, seg.end)} style={{ fill: `rgb(var(--${seg.cssVar}))` }} opacity={0.9} />
+          ))}
+          <text x="60" y="56" textAnchor="middle" style={{ fontSize: 22, fontWeight: 700, fill: "rgb(var(--fg))" }}>{total}</text>
+          <text x="60" y="70" textAnchor="middle" style={{ fontSize: 10, fill: "rgb(var(--muted))" }}>vendors</text>
+        </svg>
+        <div className="flex-1 space-y-2.5">
+          {buckets.map((b, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: `rgb(var(--${b.cssVar}))` }} />
+              <span className="flex-1 text-xs text-muted">{b.label}</span>
+              <span className="text-xs font-bold tabular-nums">{b.count}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CriticalityBars({ rows }: { rows: CustomerRow[] }) {
+  const tiers = TIER_BARS.map((t) => ({ ...t, count: rows.filter((r) => r.tier === t.label).length })).filter((t) => t.count > 0);
+  const max = Math.max(...tiers.map((t) => t.count), 1);
+
+  return (
+    <div className="glass rounded-2xl p-5">
+      <h3 className="mb-4 text-sm font-semibold">Vendor Criticality</h3>
+      <div className="space-y-3.5">
+        {tiers.map((t, i) => (
+          <div key={i}>
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-xs font-medium" style={{ color: `rgb(var(--${t.cssVar}))` }}>{t.label}</span>
+              <span className="text-xs font-bold tabular-nums text-muted">{t.count} vendor{t.count !== 1 ? "s" : ""}</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-surface-2">
+              <motion.div
+                className="h-full rounded-full"
+                style={{ background: `rgb(var(--${t.cssVar}))` }}
+                initial={{ width: 0 }}
+                animate={{ width: `${(t.count / max) * 100}%` }}
+                transition={{ duration: 0.8, delay: i * 0.08, ease: "easeOut" }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Small presentational bits                                           */
 /* ------------------------------------------------------------------ */
 
@@ -644,6 +744,12 @@ export default function CustomerPortfolio() {
             <Stat value={summary.critical} label="Critical criticality" tone="warn" />
             <Stat value={summary.overdue} label="Overdue reviews" tone="danger" />
             <Stat value={`${summary.avg}%`} label="Avg compliance posture" tone="ok" />
+          </section>
+
+          {/* CHARTS */}
+          <section className="mb-5 grid gap-4 sm:grid-cols-2">
+            <ComplianceDonut rows={sorted} />
+            <CriticalityBars rows={sorted} />
           </section>
 
           {/* TABLE */}
