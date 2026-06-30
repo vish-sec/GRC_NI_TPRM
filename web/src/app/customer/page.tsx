@@ -152,6 +152,7 @@ const TIER_BARS = [
 
 function ComplianceDonut({ rows }: { rows: CustomerRow[] }) {
   const total = rows.length;
+  const [hovered, setHovered] = useState<number | null>(null);
   const buckets = STATUS_SEGMENTS.map((s) => ({ ...s, count: rows.filter((r) => s.match(r.rating)).length })).filter((b) => b.count > 0);
 
   let angle = 0;
@@ -162,24 +163,49 @@ function ComplianceDonut({ rows }: { rows: CustomerRow[] }) {
     return seg;
   });
 
+  const hov = hovered !== null ? segments[hovered] : null;
+
   return (
     <div className="glass rounded-2xl p-5">
       <h3 className="mb-4 text-sm font-semibold">Compliance Status</h3>
       <div className="flex items-center gap-5">
-        <svg width={120} height={120} viewBox="0 0 120 120" className="shrink-0">
-          {segments.map((seg, i) => (
-            <path key={i} d={donutArc(60, 60, 52, 32, seg.start, seg.end)} style={{ fill: `rgb(var(--${seg.cssVar}))` }} opacity={0.9} />
-          ))}
-          <text x="60" y="56" textAnchor="middle" style={{ fontSize: 22, fontWeight: 700, fill: "rgb(var(--fg))" }}>{total}</text>
-          <text x="60" y="70" textAnchor="middle" style={{ fontSize: 10, fill: "rgb(var(--muted))" }}>vendors</text>
-        </svg>
+        <div className="relative shrink-0">
+          <svg width={120} height={120} viewBox="0 0 120 120">
+            {segments.map((seg, i) => (
+              <motion.path
+                key={i}
+                d={donutArc(60, 60, 52, 32, seg.start, seg.end)}
+                style={{ fill: `rgb(var(--${seg.cssVar}))`, transformOrigin: "60px 60px", cursor: "pointer" }}
+                initial={{ scale: 0, opacity: 0 }}
+                animate={{ scale: hovered === i ? 1.06 : 1, opacity: hovered === i ? 1 : 0.85 }}
+                transition={{ scale: { duration: 0.15 }, opacity: { duration: 0.5, delay: i * 0.1 } }}
+                onMouseEnter={() => setHovered(i)}
+                onMouseLeave={() => setHovered(null)}
+              />
+            ))}
+            <text x="60" y="56" textAnchor="middle" style={{ fontSize: 22, fontWeight: 700, fill: "rgb(var(--fg))", pointerEvents: "none" }}>{total}</text>
+            <text x="60" y="70" textAnchor="middle" style={{ fontSize: 10, fill: "rgb(var(--muted))", pointerEvents: "none" }}>vendors</text>
+          </svg>
+          {hov && (
+            <div className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 rounded-lg border border-border bg-surface px-2.5 py-1 text-center shadow-glow-sm">
+              <div className="text-xs font-bold" style={{ color: `rgb(var(--${hov.cssVar}))` }}>{hov.count}</div>
+              <div className="text-[10px] text-muted">{Math.round((hov.count / total) * 100)}%</div>
+            </div>
+          )}
+        </div>
         <div className="flex-1 space-y-2.5">
           {buckets.map((b, i) => (
-            <div key={i} className="flex items-center gap-2">
+            <motion.div
+              key={i}
+              className="flex cursor-default items-center gap-2 rounded-lg px-1.5 py-1 transition"
+              style={{ background: hovered === i ? `rgb(var(--${b.cssVar}) / 0.08)` : "transparent" }}
+              onMouseEnter={() => setHovered(i)}
+              onMouseLeave={() => setHovered(null)}
+            >
               <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: `rgb(var(--${b.cssVar}))` }} />
               <span className="flex-1 text-xs text-muted">{b.label}</span>
               <span className="text-xs font-bold tabular-nums">{b.count}</span>
-            </div>
+            </motion.div>
           ))}
         </div>
       </div>
@@ -190,24 +216,28 @@ function ComplianceDonut({ rows }: { rows: CustomerRow[] }) {
 function CriticalityBars({ rows }: { rows: CustomerRow[] }) {
   const tiers = TIER_BARS.map((t) => ({ ...t, count: rows.filter((r) => r.tier === t.label).length })).filter((t) => t.count > 0);
   const max = Math.max(...tiers.map((t) => t.count), 1);
+  const [hovered, setHovered] = useState<number | null>(null);
 
   return (
     <div className="glass rounded-2xl p-5">
       <h3 className="mb-4 text-sm font-semibold">Vendor Criticality</h3>
       <div className="space-y-3.5">
         {tiers.map((t, i) => (
-          <div key={i}>
+          <div key={i} onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}>
             <div className="mb-1.5 flex items-center justify-between">
               <span className="text-xs font-medium" style={{ color: `rgb(var(--${t.cssVar}))` }}>{t.label}</span>
               <span className="text-xs font-bold tabular-nums text-muted">{t.count} vendor{t.count !== 1 ? "s" : ""}</span>
             </div>
-            <div className="h-2 overflow-hidden rounded-full bg-surface-2">
+            <div className="h-2.5 overflow-hidden rounded-full bg-surface-2">
               <motion.div
                 className="h-full rounded-full"
-                style={{ background: `rgb(var(--${t.cssVar}))` }}
+                style={{
+                  background: `linear-gradient(to right, rgb(var(--${t.cssVar}) / 0.5), rgb(var(--${t.cssVar})))`,
+                  filter: hovered === i ? `drop-shadow(0 0 4px rgb(var(--${t.cssVar}) / 0.6))` : "none",
+                }}
                 initial={{ width: 0 }}
                 animate={{ width: `${(t.count / max) * 100}%` }}
-                transition={{ duration: 0.8, delay: i * 0.08, ease: "easeOut" }}
+                transition={{ duration: 0.8, delay: i * 0.1, ease: [0.16, 1, 0.3, 1] }}
               />
             </div>
           </div>
@@ -787,7 +817,7 @@ export default function CustomerPortfolio() {
                           openVendor(r.vendorId);
                         }
                       }}
-                      className="cursor-pointer border-t border-border/50 outline-none transition hover:bg-surface/50 focus-visible:bg-surface/50"
+                      className="cursor-pointer border-t border-border/50 outline-none transition hover:bg-surface/50 hover:shadow-[inset_0_0_0_1px_rgb(var(--brand)/0.2)] focus-visible:bg-surface/50"
                     >
                       <td className="px-3 py-3 font-medium">{r.name}</td>
                       <td className="px-3 py-3">
