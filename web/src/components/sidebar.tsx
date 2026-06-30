@@ -6,7 +6,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Gauge,
   Building2,
-  ShieldCheck,
   LayoutGrid,
   History,
   LogOut,
@@ -23,7 +22,6 @@ type NavItem = { href: string; label: string; icon: typeof Gauge };
 const NAV: NavItem[] = [
   { href: "/console", label: "Console", icon: Gauge },
   { href: "/onboard", label: "Onboard vendor", icon: Building2 },
-  { href: "/compliance", label: "Compliance", icon: ShieldCheck },
   { href: "/portfolio", label: "Portfolio", icon: LayoutGrid },
   { href: "/changelog", label: "Changelog", icon: History },
 ];
