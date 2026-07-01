@@ -29,6 +29,7 @@ import {
 } from "@/components/ui";
 import { cn, FRAMEWORK_VAR } from "@/lib/utils";
 import { type VendorReport, exportReportExcel, openReportPrint } from "@/lib/report";
+import { PortfolioAsk } from "@/components/portfolio-ask";
 
 /* ------------------------------------------------------------------ */
 /* Types (mirror the /api/customer payloads)                           */
@@ -930,6 +931,7 @@ export default function CustomerPortfolio() {
       </AnimatePresence>
 
       <Toaster toasts={toasts} onDismiss={dismiss} />
+      <PortfolioAsk />
     </main>
   );
 }

@@ -37,6 +37,7 @@ import { consolidatedRating } from "@/lib/risk";
 import type { VendorContact, AssessmentScope } from "@/lib/users";
 import { type VendorReport, exportReportExcel, openReportPrint } from "@/lib/report";
 import { ScopeEditor } from "@/components/scope-editor";
+import { PortfolioAsk } from "@/components/portfolio-ask";
 
 export default function Console() {
   const router = useRouter();
@@ -1302,6 +1303,7 @@ export default function Console() {
         </AnimatePresence>
 
         <Toaster toasts={toast.toasts} onDismiss={toast.dismiss} />
+        <PortfolioAsk />
       </main>
     </div>
   );
