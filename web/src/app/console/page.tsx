@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import * as XLSX from "xlsx";
 import {
   Building2,
   FileText,
@@ -22,6 +21,10 @@ import {
   X,
   Download,
   ScrollText,
+  Users,
+  UserPlus,
+  Star,
+  Target,
 } from "lucide-react";
 import { CONTROLS, FRAMEWORKS, VENDOR } from "@/data/seed";
 import { BASELINE_CONTROLS } from "@/data/baseline";
@@ -31,10 +34,13 @@ import { TracerGraph } from "@/components/tracer-graph";
 import { VerdictBadge, RiskBadge, ConfidenceMeter, RiskDial, Stat, Toaster, ErrorState, errorMessage, useToasts } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { consolidatedRating } from "@/lib/risk";
+import type { VendorContact, AssessmentScope } from "@/lib/users";
+import { type VendorReport, exportReportExcel, openReportPrint } from "@/lib/report";
+import { ScopeEditor } from "@/components/scope-editor";
 
 export default function Console() {
   const router = useRouter();
-  const [vendors, setVendors] = useState<{ vendorId: string; name: string; answered: number; total: number; status: string }[]>([]);
+  const [vendors, setVendors] = useState<{ vendorId: string; name: string; answered: number; total: number; status: string; profile?: VendorReport["profile"] }[]>([]);
   const [vendorId, setVendorId] = useState("apex");
   const [submission, setSubmission] = useState<any>(null);
   const [loadError, setLoadError] = useState("");
@@ -61,7 +67,12 @@ export default function Console() {
 
   // Audit log for assessors.
   const [auditEntries, setAuditEntries] = useState<any[]>([]);
-  const [consoleTab, setConsoleTab] = useState<"controls" | "audit">("controls");
+  const [consoleTab, setConsoleTab] = useState<"controls" | "scope" | "contacts" | "audit">("controls");
+
+  // Vendor contacts / SPOCs (assessor can add additional login accounts).
+  const [contacts, setContacts] = useState<VendorContact[]>([]);
+  const [contactForm, setContactForm] = useState({ email: "", password: "", name: "", contactRole: "" });
+  const [contactSaving, setContactSaving] = useState(false);
 
   // Send-back-for-remediation modal (single control).
   const [sendBackOpen, setSendBackOpen] = useState(false);
@@ -74,7 +85,9 @@ export default function Console() {
   const [sendBackAllSaving, setSendBackAllSaving] = useState(false);
 
   // Override form (per-control verdict override).
-  const [vendorScope, setVendorScope] = useState<{ assets: any[]; applications: any[]; services: any[] } | null>(null);
+  const [vendorScope, setVendorScope] = useState<AssessmentScope | null>(null);
+  const [scopePending, setScopePending] = useState(0);
+  const [confidentialPdf, setConfidentialPdf] = useState(true);
 
   const [overrideOpen, setOverrideOpen] = useState(false);
   const [ovVerdict, setOvVerdict] = useState<Verdict>("Compliant");
@@ -113,7 +126,7 @@ export default function Console() {
         if (cancelled) return;
         setSubmission(r.ok ? await r.json() : null);
         setResults({});
-        try { const sc = await fetch(`/api/scope?vendorId=${encodeURIComponent(vendorId)}`); if (sc.ok && !cancelled) setVendorScope((await sc.json()).scope); } catch {}
+        try { const sc = await fetch(`/api/scope?vendorId=${encodeURIComponent(vendorId)}`); if (sc.ok && !cancelled) { const d = await sc.json(); setVendorScope(d.scope); setScopePending((d.requests ?? []).filter((q: any) => q.status === "pending").length); } } catch {}
       } catch {
         if (!cancelled) { setSubmission(null); setResults({}); }
       }
@@ -219,8 +232,8 @@ export default function Console() {
     }
     try {
       await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker));
-      if (failures === 0) toast.success(`Adjudicated ${pending.length} controls.`);
-      else toast.error(`${failures} of ${pending.length} adjudications failed.`);
+      if (failures === 0) toast.success(`Reviewed ${pending.length} controls.`);
+      else toast.error(`${failures} of ${pending.length} reviews failed.`);
     } finally {
       setRunningAll(false);
     }
@@ -332,42 +345,85 @@ export default function Console() {
     else toast.error(`${failures} of ${ncControls.length} send-backs failed.`);
   }
 
-  // Export per-vendor compliance report as Excel.
-  function exportVendorReport() {
+  // Vendor contacts / SPOCs — load for the active vendor, refresh on switch.
+  const loadContacts = useCallback(async (vid: string) => {
     try {
-      const wb = XLSX.utils.book_new();
-      const summaryData = [{
-        Vendor: selectedVendorName,
-        "Assessment Date": new Date().toLocaleDateString("en-GB"),
-        "Assessed Controls": summary.assessed,
-        Compliant: summary.compliant,
-        "Non-Compliant": summary.nc,
-        "Not Applicable": summary.na,
-        "Posture Score (%)": summary.posture,
-        "Consolidated Rating": consolidatedRating(Object.values(results).filter((r) => r.verdict === "Non-Compliant").map((r) => r.risk)).rating,
-      }];
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryData), "Summary");
-      const reqData = controls.map((c) => {
+      const r = await fetch(`/api/vendor-user?vendorId=${encodeURIComponent(vid)}`);
+      if (r.ok) setContacts((await r.json()).contacts ?? []);
+      else setContacts([]);
+    } catch { setContacts([]); }
+  }, []);
+  useEffect(() => { if (vendorId) loadContacts(vendorId); }, [vendorId, loadContacts]);
+
+  async function addContact() {
+    if (!contactForm.email.trim() || !contactForm.password) { toast.error("Email and password are required."); return; }
+    setContactSaving(true);
+    try {
+      const res = await fetch("/api/vendor-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          vendorId,
+          email: contactForm.email.trim(),
+          password: contactForm.password,
+          name: contactForm.name.trim() || undefined,
+          contactRole: contactForm.contactRole.trim() || undefined,
+        }),
+      });
+      if (!res.ok) throw new Error(await errorMessage(res, "Could not create the contact."));
+      toast.success("Contact account created.");
+      setContactForm({ email: "", password: "", name: "", contactRole: "" });
+      await loadContacts(vendorId);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not create the contact.");
+    } finally {
+      setContactSaving(false);
+    }
+  }
+
+  // Assemble the shared per-vendor report payload from current console state.
+  function buildReport(): VendorReport {
+    const profile = vendors.find((v) => v.vendorId === vendorId)?.profile as VendorReport["profile"] | undefined;
+    return {
+      vendorName: selectedVendorName,
+      generatedAt: new Date().toLocaleString("en-GB"),
+      scope: vendorScope,
+      profile: profile ?? null,
+      summary: { assessed: summary.assessed, compliant: summary.compliant, nc: summary.nc, na: summary.na, posture: summary.posture },
+      rating: consolidatedRating(Object.values(results).filter((r) => r.verdict === "Non-Compliant").map((r) => r.risk)),
+      confidential: confidentialPdf,
+      controls: controls.map((c) => {
         const r = results[c.id];
         const ans = submission?.answers?.[c.id];
+        const ov = overrides?.[c.id];
         return {
-          "Control ID": c.id,
-          Family: c.family,
-          Requirement: c.question,
-          "Vendor Response": ans?.response || (ans?.applicable === false ? "Not Applicable" : ""),
-          Verdict: r?.verdict ?? "Not assessed",
-          Risk: r?.risk ?? "",
-          "Risk Statement": r?.riskStatement ?? "",
-          Recommendations: (r?.recommendations ?? []).join("; "),
+          id: c.id,
+          family: c.family,
+          question: c.question,
+          response: ans?.response || (ans?.applicable === false ? "Not Applicable" : ""),
+          coverage: ans?.coverage,
+          evidence: (ans?.evidence ?? []).map((e: any) => e.filename),
+          verdict: r?.verdict ?? "Not assessed",
+          risk: r?.risk ?? "",
+          riskStatement: r?.riskStatement,
+          recommendations: r?.recommendations ?? [],
+          override: ov ? { verdict: ov.verdict, risk: ov.risk, rationale: ov.rationale, by: ov.by } : undefined,
         };
-      });
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(reqData), "Requirements");
-      const slug = selectedVendorName.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 30);
-      XLSX.writeFile(wb, `tprm-report-${slug}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      }),
+    };
+  }
+
+  function exportVendorReport() {
+    try {
+      exportReportExcel(buildReport());
       toast.success(`${selectedVendorName} report exported.`);
     } catch {
       toast.error("Export failed.");
     }
+  }
+
+  function exportVendorPdf() {
+    if (!openReportPrint(buildReport())) toast.error("Allow pop-ups to generate the PDF report.");
   }
 
   // Set an assessor verdict override, then re-adjudicate so the result reflects it.
@@ -496,14 +552,28 @@ export default function Console() {
                 <option key={v.vendorId} value={v.vendorId}>{v.name} ({v.answered}/{v.total})</option>
               ))}
             </select>
-            <button
-              onClick={exportVendorReport}
-              disabled={summary.assessed === 0}
-              title="Export compliance report as Excel"
-              className="inline-flex items-center gap-2 rounded-xl border border-border px-3.5 py-2 text-sm font-medium text-muted transition hover:text-fg disabled:opacity-40"
-            >
-              <Download size={16} /> Export report
-            </button>
+            <label className="hidden items-center gap-1.5 text-xs text-muted lg:flex" title="Stamp the PDF CONFIDENTIAL and remind to password-protect before external sharing">
+              <input type="checkbox" checked={confidentialPdf} onChange={(e) => setConfidentialPdf(e.target.checked)} className="accent-brand" />
+              Confidential
+            </label>
+            <div className="inline-flex overflow-hidden rounded-xl border border-border">
+              <button
+                onClick={exportVendorPdf}
+                disabled={summary.assessed === 0}
+                title="Generate assessment report as PDF"
+                className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-muted transition hover:text-fg disabled:opacity-40"
+              >
+                <FileText size={16} /> PDF
+              </button>
+              <button
+                onClick={exportVendorReport}
+                disabled={summary.assessed === 0}
+                title="Export assessment report as Excel"
+                className="inline-flex items-center gap-2 border-l border-border px-3 py-2 text-sm font-medium text-muted transition hover:text-fg disabled:opacity-40"
+              >
+                <Download size={16} /> Excel
+              </button>
+            </div>
             <button
               onClick={runAll}
               disabled={runningAll}
@@ -520,15 +590,79 @@ export default function Console() {
         {/* Tab bar: Controls | Audit log */}
         <div className="mb-5 -mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
           <button onClick={() => setConsoleTab("controls")} className={cn("inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition", consoleTab === "controls" ? "border-brand/50 bg-brand/10 text-fg" : "border-border text-muted hover:text-fg")}><Sparkles size={15} /> Controls</button>
+          <button onClick={() => setConsoleTab("scope")} className={cn("inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition", consoleTab === "scope" ? "border-brand/50 bg-brand/10 text-fg" : "border-border text-muted hover:text-fg")}><Target size={15} /> Scope{scopePending > 0 && <span className="rounded-md bg-warn/20 px-1.5 text-[10px] text-warn">{scopePending}</span>}</button>
+          <button onClick={() => setConsoleTab("contacts")} className={cn("inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition", consoleTab === "contacts" ? "border-brand/50 bg-brand/10 text-fg" : "border-border text-muted hover:text-fg")}><Users size={15} /> Contacts{contacts.length > 0 && <span className="rounded-md bg-surface-2 px-1.5 text-[10px]">{contacts.length}</span>}</button>
           <button onClick={() => setConsoleTab("audit")} className={cn("inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition", consoleTab === "audit" ? "border-brand/50 bg-brand/10 text-fg" : "border-border text-muted hover:text-fg")}><ScrollText size={15} /> Audit log</button>
         </div>
+
+        {/* Scope tab — assessor-defined scope + change-request review */}
+        {consoleTab === "scope" && (
+          <div className="mb-6">
+            <ScopeEditor key={vendorId} vendorId={vendorId} vendorName={selectedVendorName} />
+          </div>
+        )}
+
+        {/* Contacts / SPOCs tab */}
+        {consoleTab === "contacts" && (
+          <div className="mb-6 grid gap-5 lg:grid-cols-5">
+            <section className="glass overflow-hidden rounded-2xl lg:col-span-3">
+              <div className="border-b border-border px-5 py-3">
+                <h3 className="text-sm font-semibold">Contacts for {selectedVendorName}</h3>
+                <p className="text-xs text-muted">All login accounts (SPOCs) that share this vendor&apos;s workspace.</p>
+              </div>
+              <div className="divide-y divide-border/60">
+                {contacts.length === 0 && <div className="px-5 py-6 text-center text-sm text-muted">No contacts loaded.</div>}
+                {contacts.map((c) => (
+                  <div key={c.username} className="flex items-center gap-3 px-5 py-3">
+                    <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand/15 text-xs font-bold text-brand">
+                      {(c.name || c.username)[0]?.toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium">{c.name || c.username}</span>
+                        {c.primary && <span className="inline-flex items-center gap-1 rounded-md bg-mas/10 px-1.5 py-0.5 text-[10px] font-semibold text-mas"><Star size={10} /> Primary</span>}
+                        {c.contactRole && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">{c.contactRole}</span>}
+                      </div>
+                      <div className="truncate font-mono text-xs text-muted">{c.username}</div>
+                    </div>
+                    <span className="shrink-0 text-[11px] text-muted">{new Date(c.createdAt).toLocaleDateString("en-GB")}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="glass overflow-hidden rounded-2xl lg:col-span-2">
+              <div className="border-b border-border px-5 py-3">
+                <h3 className="flex items-center gap-2 text-sm font-semibold"><UserPlus size={15} /> Add a contact</h3>
+                <p className="text-xs text-muted">Creates an additional login for this vendor.</p>
+              </div>
+              <div className="space-y-3 p-5">
+                <label className="block text-xs font-medium">Display name <span className="text-muted">(optional)</span>
+                  <input value={contactForm.name} onChange={(e) => setContactForm((f) => ({ ...f, name: e.target.value }))} placeholder="Jane Doe" className="mt-1 block w-full rounded-xl border border-border bg-surface/60 px-3 py-2 text-sm outline-none focus:border-brand" />
+                </label>
+                <label className="block text-xs font-medium">Contact role <span className="text-muted">(optional)</span>
+                  <input value={contactForm.contactRole} onChange={(e) => setContactForm((f) => ({ ...f, contactRole: e.target.value }))} placeholder="Security / Compliance / Primary SPOC" className="mt-1 block w-full rounded-xl border border-border bg-surface/60 px-3 py-2 text-sm outline-none focus:border-brand" />
+                </label>
+                <label className="block text-xs font-medium">Email <span className="text-danger">*</span>
+                  <input type="email" value={contactForm.email} onChange={(e) => setContactForm((f) => ({ ...f, email: e.target.value }))} placeholder="contact@vendor.com" className="mt-1 block w-full rounded-xl border border-border bg-surface/60 px-3 py-2 text-sm outline-none focus:border-brand" />
+                </label>
+                <label className="block text-xs font-medium">Temporary password <span className="text-danger">*</span>
+                  <input type="password" value={contactForm.password} onChange={(e) => setContactForm((f) => ({ ...f, password: e.target.value }))} placeholder="Min. 6 characters" className="mt-1 block w-full rounded-xl border border-border bg-surface/60 px-3 py-2 text-sm outline-none focus:border-brand" />
+                </label>
+                <button onClick={addContact} disabled={contactSaving} className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white shadow-glow-sm transition hover:brightness-110 disabled:opacity-60">
+                  {contactSaving ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}{contactSaving ? "Creating…" : "Create account"}
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
 
         {/* Audit log tab */}
         {consoleTab === "audit" && (
           <section className="glass overflow-hidden rounded-2xl mb-6">
             <div className="px-5 py-3 border-b border-border">
               <h3 className="text-sm font-semibold">Activity log</h3>
-              <p className="text-xs text-muted">Overrides, send-backs, adjudications, and logins for this platform.</p>
+              <p className="text-xs text-muted">Overrides, send-backs, reviews, and logins for this platform.</p>
             </div>
             <div className="max-h-[60vh] overflow-y-auto">
               <table className="w-full text-sm">
@@ -580,20 +714,20 @@ export default function Console() {
                 )}
               </div>
               <div className="mt-0.5 text-sm text-muted">{submission?.status === "submitted" ? "Submitted for review" : "Assessment in progress"}</div>
-              {vendorScope && (vendorScope.assets.length + vendorScope.applications.length + vendorScope.services.length) > 0 && (
+              {vendorScope && (
                 <div className="mt-2 flex flex-wrap gap-1">
-                  {vendorScope.assets.slice(0, 2).map((a: any, i: number) => (
-                    <span key={i} className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[10px] text-muted" title={a.description}>{a.name} ({a.type})</span>
-                  ))}
+                  {vendorScope.dataClassification && (
+                    <span className="rounded-full border border-mas/30 bg-mas/5 px-2 py-0.5 text-[10px] font-medium text-mas">Data: {vendorScope.dataClassification}</span>
+                  )}
+                  {vendorScope.businessCriticality && (
+                    <span className="rounded-full border border-warn/30 bg-warn/5 px-2 py-0.5 text-[10px] font-medium text-warn">Criticality: {vendorScope.businessCriticality}</span>
+                  )}
                   {vendorScope.applications.slice(0, 2).map((a: any, i: number) => (
-                    <span key={i} className="rounded-full border border-brand/30 bg-brand/5 px-2 py-0.5 text-[10px] text-brand" title={a.description}>{a.name}</span>
+                    <span key={`app${i}`} className="rounded-full border border-brand/30 bg-brand/5 px-2 py-0.5 text-[10px] text-brand" title={a.description}>{a.name}</span>
                   ))}
                   {vendorScope.services.slice(0, 1).map((s: any, i: number) => (
-                    <span key={i} className="rounded-full border border-ok/30 bg-ok/5 px-2 py-0.5 text-[10px] text-ok" title={s.description}>{s.name}</span>
+                    <span key={`svc${i}`} className="rounded-full border border-ok/30 bg-ok/5 px-2 py-0.5 text-[10px] text-ok" title={s.description}>{s.name}</span>
                   ))}
-                  {(vendorScope.assets.length + vendorScope.applications.length + vendorScope.services.length) > 5 && (
-                    <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[10px] text-muted">+more</span>
-                  )}
                 </div>
               )}
             </div>
@@ -767,7 +901,7 @@ export default function Console() {
               </div>
               <h3 className="text-base font-semibold">No submission yet from {selectedVendorName}</h3>
               <p className="mt-1 max-w-sm text-sm text-muted">
-                This vendor has not answered any controls or attached evidence. You can still browse the control library and run AI adjudication once they submit.
+                This vendor has not answered any controls or attached evidence. You can still browse the control library and run an AI review once they submit.
               </p>
             </div>
           )}
@@ -787,7 +921,7 @@ export default function Console() {
                   <div>
                     <span className="font-semibold text-warn">Prior audit: Non-Compliant</span>
                     {selectedPriorNote && <span className="text-fg"> — {selectedPriorNote}</span>}
-                    <span className="text-muted"> Re-verify before adjudicating.</span>
+                    <span className="text-muted"> Re-verify before reviewing.</span>
                   </div>
                 </div>
               )}
@@ -826,7 +960,7 @@ export default function Console() {
                   )}
                 >
                   <Sparkles size={16} />
-                  {scanning[control.id] ? "AI adjudicating evidence…" : "Adjudicate with AI"}
+                  {scanning[control.id] ? "Reviewing evidence…" : "Review with AI"}
                 </button>
               )}
             </div>
@@ -918,7 +1052,7 @@ export default function Console() {
                     </button>
                     {review && (
                       <span className={cn("text-[11px] font-medium", review.status === "resubmitted" ? "text-ok" : "text-warn")}>
-                        {review.status === "resubmitted" ? "Vendor has resubmitted — re-adjudicate" : "Returned to vendor — awaiting remediation"}
+                        {review.status === "resubmitted" ? "Vendor has resubmitted — re-review" : "Returned to vendor — awaiting remediation"}
                       </span>
                     )}
                   </div>

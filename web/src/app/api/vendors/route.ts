@@ -30,8 +30,27 @@ export async function GET() {
   const s = await currentSession();
   if (!can(s?.role, "submission:read:all")) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
-  const rows = [{ vendorId: "apex", name: "Apex Cloud Services Pvt. Ltd. (demo)" }, ...listVendors().map((v) => ({ vendorId: v.vendorId, name: v.name }))];
-  const vendors = rows.map((r) => {
+  const rows = [
+    { vendorId: "apex", name: "Apex Cloud Services Pvt. Ltd. (demo)", profile: null as Record<string, unknown> | null, assignedAssessor: undefined as string | undefined },
+    ...listVendors().map((v) => ({
+      vendorId: v.vendorId,
+      name: v.name,
+      // Slim profile for report headers (regulatory scope + hosting).
+      profile: {
+        regulators: v.profile?.regulators ?? [],
+        infraType: v.profile?.infraType,
+        csp: v.profile?.csp,
+        engagementType: v.profile?.engagementType,
+      } as Record<string, unknown>,
+      assignedAssessor: v.profile?.assignedAssessor,
+    })),
+  ];
+  // Assessors see vendors assigned to them plus any still-unassigned ones; Root
+  // (and the customer view) see everything.
+  const visible = s!.role === "assessor"
+    ? rows.filter((r) => !r.assignedAssessor || r.assignedAssessor === s!.username)
+    : rows;
+  const vendors = visible.map((r) => {
     const sub = getSubmission(r.vendorId);
     const answered = CONTROLS.filter((c) => sub.answers[c.id] && (sub.answers[c.id].response?.trim() || sub.answers[c.id].applicable === false)).length;
     return { ...r, status: sub.status, answered, total: CONTROLS.length };

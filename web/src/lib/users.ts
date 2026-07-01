@@ -4,6 +4,21 @@ import crypto from "crypto";
 import type { Session } from "./auth";
 import { withLock } from "./lock";
 import { IS_PROD } from "./config";
+import { computeTier, type IRQ } from "./risk";
+
+// Derive the inherent-risk questionnaire inputs from the assessment-scope
+// parameters, so the scope drives the risk tier (null if not enough is set).
+function scopeToIRQ(scope: AssessmentScope): IRQ | null {
+  if (!scope.dataClassification && !scope.accessLevel && !scope.businessCriticality && !scope.dataVolume) return null;
+  return {
+    // IRQ has no "public" band — treat public data as the lowest sensitivity.
+    dataSensitivity: scope.dataClassification === "public" ? "none" : (scope.dataClassification ?? "internal"),
+    access: scope.accessLevel === "read" ? "limited" : (scope.accessLevel ?? "none"),
+    criticality: scope.businessCriticality ?? "low",
+    volume: scope.dataVolume ?? "low",
+    frameworks: scope.frameworks.filter((f) => f !== "None"),
+  };
+}
 
 // Dynamic, persisted vendor accounts (onboarding). File-backed for the demo.
 // PRODUCTION: move to the DB; passwords already hashed (scrypt) here.
@@ -31,12 +46,65 @@ export interface VendorProfile {
   tprmInitiatedAt?: string; // ISO; when the assessment was initiated
   agreementFile?: UploadRef; // existing vendors: contract/MSA
   lastAuditFile?: UploadRef; // existing vendors: last TPRM audit report
+  scopeDocFile?: UploadRef; // assessment-scope source document (used to auto-fill the scope)
   onboardedBy?: string; // assessor username who created the vendor
-  // ---- Scope definition (Phase B) ----
-  assessmentScope?: {
-    assets: { name: string; type: string; description: string }[];
-    applications: { name: string; url: string; description: string }[];
-    services: { name: string; description: string }[];
+  assignedAssessor?: string; // assessor username this vendor is assigned to (Root assigns)
+  // ---- Scope definition (Phase B / Phase 4 — assessor-defined) ----
+  assessmentScope?: AssessmentScope;
+  scopeChangeRequests?: ScopeChangeRequest[];
+}
+
+// Scope parameters that drive the inherent-risk tier + regulatory mapping.
+export type DataClassification = "public" | "internal" | "confidential" | "regulated";
+export type AccessLevel = "none" | "read" | "privileged";
+export type Criticality = "low" | "medium" | "high";
+export type DataVolume = "low" | "medium" | "high";
+export type Connectivity = "none" | "api" | "vpn" | "dedicated";
+
+// The assessment scope is OWNED BY THE ASSESSOR. Vendors view it read-only and
+// must file a change request to alter it (versioned + audited).
+export interface AssessmentScope {
+  name?: string; // assessment name
+  type?: string; // Onboarding / Annual / Re-assessment / Ad-hoc
+  periodStart?: string; // ISO date
+  periodEnd?: string; // ISO date
+  services: { name: string; description?: string }[];
+  applications: { name: string; url?: string; description?: string }[];
+  hostingModel?: "on_prem" | "cloud" | "hybrid";
+  cloudProvider?: string;
+  regions: string[]; // data residency — where data is stored/processed
+  dataTypes: string[];
+  subcontractors: { name: string; service?: string }[]; // fourth parties
+  // ---- Risk-mapping parameters (feed computeTier + framework applicability) ----
+  dataClassification?: DataClassification;
+  accessLevel?: AccessLevel; // vendor's access to the bank's systems/data
+  businessCriticality?: Criticality;
+  dataVolume?: DataVolume;
+  connectivity?: Connectivity; // integration / network connection type
+  crossBorderTransfer?: boolean; // data leaves the home jurisdiction
+  frameworks: string[]; // drives the questionnaire (RBI / MAS / SEBI / None)
+  outOfScope?: string;
+  status: "draft" | "active";
+  version: number;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+export interface ScopeChangeRequest {
+  id: string;
+  requestedBy: string; // vendor username
+  justification: string;
+  status: "pending" | "approved" | "rejected";
+  createdAt: string;
+  decidedBy?: string;
+  decidedAt?: string;
+  decisionNote?: string;
+}
+
+export function emptyScope(frameworks: string[] = []): AssessmentScope {
+  return {
+    services: [], applications: [], regions: [], dataTypes: [], subcontractors: [],
+    frameworks, status: "draft", version: 1,
   };
 }
 export interface StoredUser {
@@ -48,6 +116,15 @@ export interface StoredUser {
   status: "active";
   profile: VendorProfile;
   createdAt: string;
+  contactRole?: string; // optional tag: "Primary SPOC", "Security", "Compliance", etc.
+}
+
+export interface VendorContact {
+  username: string;
+  name: string;
+  contactRole?: string;
+  createdAt: string;
+  primary: boolean; // earliest-created account is the primary login
 }
 
 function readAll(): Record<string, StoredUser> {
@@ -136,17 +213,36 @@ export function createVendor(input: { email: string; password: string; profile: 
   });
 }
 
+// One row PER VENDOR (deduped by vendorId). A vendor can have several login
+// accounts/SPOCs — keep the earliest-created as the canonical record so the
+// vendor appears once in every listing (portfolio, customer view, picker).
 export function listVendors() {
-  return Object.values(readAll()).map((u) => ({
-    username: u.username,
-    name: u.name,
-    vendorId: u.vendorId,
-    profile: u.profile,
-    createdAt: u.createdAt,
-  }));
+  const byVendor = new Map<string, { username: string; name: string; vendorId: string; profile: VendorProfile; createdAt: string }>();
+  for (const u of Object.values(readAll())) {
+    const existing = byVendor.get(u.vendorId);
+    if (!existing || u.createdAt < existing.createdAt) {
+      byVendor.set(u.vendorId, { username: u.username, name: u.name, vendorId: u.vendorId, profile: u.profile, createdAt: u.createdAt });
+    }
+  }
+  return Array.from(byVendor.values());
 }
 export function getVendorProfile(vendorId: string): VendorProfile | null {
   return Object.values(readAll()).find((u) => u.vendorId === vendorId)?.profile ?? null;
+}
+
+// All login accounts (SPOCs/contacts) for a vendor, oldest first. The earliest
+// account is flagged as the primary login.
+export function listVendorContacts(vendorId: string): VendorContact[] {
+  const rows = Object.values(readAll())
+    .filter((u) => u.vendorId === vendorId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return rows.map((u, i) => ({
+    username: u.username,
+    name: u.name,
+    contactRole: u.contactRole,
+    createdAt: u.createdAt,
+    primary: i === 0,
+  }));
 }
 
 // Merge fields into a vendor's profile (assessor onboarding: file refs, infra, etc.).
@@ -159,6 +255,81 @@ export function updateVendorProfile(vendorId: string, patch: Partial<VendorProfi
     all[entry.username] = entry;
     writeAll(all);
     return true;
+  });
+}
+
+// Assessor sets/replaces a vendor's assessment scope. Bumps the version, stamps
+// who/when, and keeps profile.regulators in sync (frameworks drive the
+// questionnaire via lib/scope). Returns the persisted scope, or null if no vendor.
+export function setAssessmentScope(vendorId: string, scope: AssessmentScope, actor: string): Promise<AssessmentScope | null> {
+  return withLock("users", () => {
+    const all = readAll();
+    const entry = Object.values(all).find((u) => u.vendorId === vendorId);
+    if (!entry) return null;
+    const prev = entry.profile.assessmentScope;
+    const next: AssessmentScope = {
+      ...scope,
+      version: (prev?.version ?? 0) + 1,
+      updatedAt: new Date().toISOString(),
+      updatedBy: actor,
+    };
+    entry.profile.assessmentScope = next;
+    // Keep the regulator-driven questionnaire selection consistent with scope.
+    entry.profile.regulators = next.frameworks;
+    // Scope parameters drive the inherent-risk tier (assessor-set => authoritative).
+    const irq = scopeToIRQ(next);
+    if (irq) {
+      const { tier, score } = computeTier(irq);
+      entry.profile.tier = tier;
+      entry.profile.tierScore = score;
+      entry.profile.tierSelfDeclared = false;
+    }
+    all[entry.username] = entry;
+    writeAll(all);
+    return next;
+  });
+}
+
+// Vendor files a scope-change request (justification only — the assessor edits
+// the actual scope on approval). Returns the created request, or null if no vendor.
+export function addScopeChangeRequest(vendorId: string, requestedBy: string, justification: string): Promise<ScopeChangeRequest | null> {
+  return withLock("users", () => {
+    const all = readAll();
+    const entry = Object.values(all).find((u) => u.vendorId === vendorId);
+    if (!entry) return null;
+    const req: ScopeChangeRequest = {
+      id: crypto.randomBytes(8).toString("hex"),
+      requestedBy,
+      justification: justification.slice(0, 2000),
+      status: "pending",
+      createdAt: new Date().toISOString(),
+    };
+    const list = entry.profile.scopeChangeRequests ?? [];
+    entry.profile.scopeChangeRequests = [req, ...list].slice(0, 100);
+    all[entry.username] = entry;
+    writeAll(all);
+    return req;
+  });
+}
+
+// Assessor approves/rejects a pending scope-change request.
+export function decideScopeChangeRequest(
+  vendorId: string, requestId: string, decision: "approved" | "rejected", decidedBy: string, note?: string
+): Promise<ScopeChangeRequest | null> {
+  return withLock("users", () => {
+    const all = readAll();
+    const entry = Object.values(all).find((u) => u.vendorId === vendorId);
+    if (!entry) return null;
+    const list = entry.profile.scopeChangeRequests ?? [];
+    const req = list.find((r) => r.id === requestId);
+    if (!req || req.status !== "pending") return null;
+    req.status = decision;
+    req.decidedBy = decidedBy;
+    req.decidedAt = new Date().toISOString();
+    if (note) req.decisionNote = note.slice(0, 1000);
+    all[entry.username] = entry;
+    writeAll(all);
+    return req;
   });
 }
 
@@ -177,8 +348,21 @@ export function setVendorTier(vendorId: string, tier: string): Promise<boolean> 
   });
 }
 
+// Root assigns a vendor to an assessor (or clears with "" ). Returns false if no vendor.
+export function assignVendorToAssessor(vendorId: string, assessor: string): Promise<boolean> {
+  return withLock("users", () => {
+    const all = readAll();
+    const entry = Object.values(all).find((u) => u.vendorId === vendorId);
+    if (!entry) return false;
+    entry.profile.assignedAssessor = assessor || undefined;
+    all[entry.username] = entry;
+    writeAll(all);
+    return true;
+  });
+}
+
 // Add an additional login account for an existing vendor (shared submission workspace).
-export function addUserToVendor(input: { vendorId: string; email: string; password: string; name?: string }): Promise<Session> {
+export function addUserToVendor(input: { vendorId: string; email: string; password: string; name?: string; contactRole?: string }): Promise<Session> {
   return withLock("users", () => {
     const all = readAll();
     const existing = Object.values(all).find((u) => u.vendorId === input.vendorId);
@@ -198,6 +382,7 @@ export function addUserToVendor(input: { vendorId: string; email: string; passwo
       status: "active",
       profile: existing.profile,
       createdAt: new Date().toISOString(),
+      contactRole: (input.contactRole || "").trim() || undefined,
     };
     all[username] = user;
     writeAll(all);

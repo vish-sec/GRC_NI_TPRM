@@ -29,6 +29,7 @@ export type Permission =
   | "adjudicate:run"
   | "users:read"
   | "users:manage"
+  | "vendor:contacts:manage" // add/list a vendor's login accounts (SPOCs) — assessor-scoped
   | "settings:read"
   | "settings:manage"
   | "audit:read";
@@ -37,9 +38,9 @@ const MATRIX: Record<Role, Permission[]> = {
   root: [
     "submission:read:own", "submission:write:own", "submission:read:all",
     "verdict:override", "adjudicate:run",
-    "users:read", "users:manage", "settings:read", "settings:manage", "audit:read",
+    "users:read", "users:manage", "vendor:contacts:manage", "settings:read", "settings:manage", "audit:read",
   ],
-  assessor: ["submission:read:all", "verdict:override", "adjudicate:run", "audit:read"],
+  assessor: ["submission:read:all", "verdict:override", "adjudicate:run", "vendor:contacts:manage", "audit:read"],
   vendor: ["submission:read:own", "submission:write:own"],
   // Customer: read-only holistic consumer (bank stakeholder). Sees the portfolio
   // of vendors + per-requirement compliance detail; no write, no admin/settings.
@@ -58,6 +59,14 @@ export const USERS: Record<string, { password: string; session: Session }> = {
   apex: { password: "demo", session: { username: "apex", role: "vendor", vendorId: "apex", name: "Apex Cloud Services Pvt. Ltd." } },
   customer: { password: "demo", session: { username: "customer", role: "customer", name: "Customer (Bank Stakeholder)" } },
 };
+
+// Roster of assessor accounts (for Root's vendor→assessor assignment). PRODUCTION:
+// source this from the DB/IdP. Demo: derive from the seeded USERS above.
+export function assessorRoster(): { username: string; name: string }[] {
+  return Object.values(USERS)
+    .filter((u) => u.session.role === "assessor")
+    .map((u) => ({ username: u.session.username, name: u.session.name }));
+}
 
 export const LANDING: Record<Role, string> = {
   root: "/admin",

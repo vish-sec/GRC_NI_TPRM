@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import { Paperclip, FileText, CheckCircle2, UploadCloud, Send, LogOut, Loader2, ChevronDown, AlertTriangle, ShieldCheck, Trash2, MessageCircle, X, Lock } from "lucide-react";
+import { Paperclip, FileText, CheckCircle2, UploadCloud, Send, LogOut, Loader2, ChevronDown, AlertTriangle, ShieldCheck, Trash2, MessageCircle, X, Lock, Save } from "lucide-react";
 import { CONTROLS } from "@/data/seed";
 import { BASELINE_CONTROLS } from "@/data/baseline";
 import type { CertType, CoverageMode, Submission, VendorCert } from "@/lib/store";
 import { LogoLockup } from "@/components/animated-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ErrorState, Toaster, errorMessage, useToasts } from "@/components/ui";
+import { VendorScope } from "@/components/vendor-scope";
 
 function CompletionRing({ pct }: { pct: number }) {
   const r = 26;
@@ -41,6 +42,7 @@ function CompletionRing({ pct }: { pct: number }) {
 import { cn } from "@/lib/utils";
 
 type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
+type AutosavePatch = { response?: string; justification?: string; certMappingNote?: string; coverage?: CoverageMode; applicable?: boolean };
 
 type Answer = Submission["answers"][string];
 
@@ -86,6 +88,13 @@ function isAnswered(a: Answer | undefined, certTypes: Set<CertType>): boolean {
   return !!a.response?.trim() || (a.evidence?.length ?? 0) > 0;
 }
 
+// Quick-prompt chips offered by Vera when a control's chat is first opened.
+const VERA_PROMPTS = [
+  "What evidence satisfies this control?",
+  "What are common reasons this is marked Non-Compliant?",
+  "Show me a strong vs. weak evidence example",
+];
+
 export default function VendorPortal() {
   const router = useRouter();
   const [name, setName] = useState("");
@@ -110,10 +119,18 @@ export default function VendorPortal() {
   const certFileRef = useRef<HTMLInputElement | null>(null);
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Latest un-flushed patch per control, so an explicit "Save draft" can persist
+  // anything still sitting in the debounce window immediately.
+  const pendingPatches = useRef<Record<string, AutosavePatch>>({});
+  const [savingDraft, setSavingDraft] = useState(false);
   const scrollRestoreRef = useRef<number | null>(null);
   const toast = useToasts();
 
-  // CompliQ chatbot state
+  // Password prompt for an encrypted uploaded document.
+  const [pwPrompt, setPwPrompt] = useState<{ controlId: string; file: File; error?: string } | null>(null);
+  const [pwValue, setPwValue] = useState("");
+
+  // Vera chatbot state
   const [chatOpen, setChatOpen] = useState(false);
   const [chatControlId, setChatControlId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
@@ -200,10 +217,14 @@ export default function VendorPortal() {
     return () => { cancelled = true; };
   }, [router, reloadKey, loadCerts]);
 
-  // Restore scroll position after state updates (prevents page-top-jump on save).
+  // Restore scroll position after state updates (prevents page-top-jump on
+  // save / upload / submit). Re-apply on the next frame too, since framer-motion
+  // animates section heights after layout and would otherwise shift the page.
   useLayoutEffect(() => {
     if (scrollRestoreRef.current !== null) {
-      window.scrollTo(0, scrollRestoreRef.current);
+      const y = scrollRestoreRef.current;
+      window.scrollTo(0, y);
+      requestAnimationFrame(() => window.scrollTo(0, y));
       scrollRestoreRef.current = null;
     }
   });
@@ -294,14 +315,13 @@ export default function VendorPortal() {
 
   // Debounced autosave for free-text fields (response & N/A justification) ~1.5s after typing stops.
   const queueAutosave = useCallback(
-    (
-      controlId: string,
-      patch: { response?: string; justification?: string; certMappingNote?: string; coverage?: CoverageMode; applicable?: boolean }
-    ) => {
+    (controlId: string, patch: AutosavePatch) => {
       setSaveState("dirty");
+      pendingPatches.current[controlId] = patch;
       if (debounceTimers.current[controlId]) clearTimeout(debounceTimers.current[controlId]);
       debounceTimers.current[controlId] = setTimeout(() => {
         delete debounceTimers.current[controlId];
+        delete pendingPatches.current[controlId];
         save(controlId, patch);
       }, 1500);
     },
@@ -310,13 +330,32 @@ export default function VendorPortal() {
 
   // Cancel a pending autosave (e.g. when blur-save fires first).
   function cancelAutosave(controlId: string) {
+    delete pendingPatches.current[controlId];
     if (debounceTimers.current[controlId]) {
       clearTimeout(debounceTimers.current[controlId]);
       delete debounceTimers.current[controlId];
     }
   }
 
-  // CompliQ chatbot — ask for guidance on a specific control.
+  // Explicit "Save draft" — flush anything still in the debounce window right now,
+  // so the vendor gets immediate confirmation their progress is persisted.
+  async function saveDraftNow() {
+    const ids = Object.keys(pendingPatches.current);
+    setSavingDraft(true);
+    try {
+      for (const id of ids) {
+        if (debounceTimers.current[id]) { clearTimeout(debounceTimers.current[id]); delete debounceTimers.current[id]; }
+        const patch = pendingPatches.current[id];
+        delete pendingPatches.current[id];
+        await save(id, patch);
+      }
+      toast.success("Draft saved — you can close this and resume anytime.");
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+
+  // Vera chatbot — ask for guidance on a specific control.
   function openChat(controlId: string) {
     setChatControlId(controlId);
     setChatMessages([]);
@@ -324,9 +363,9 @@ export default function VendorPortal() {
     setChatOpen(true);
   }
 
-  async function sendChat() {
-    if (!chatInput.trim() || !chatControlId || chatLoading) return;
-    const msg = chatInput.trim();
+  async function sendChat(preset?: string) {
+    const msg = (preset ?? chatInput).trim();
+    if (!msg || !chatControlId || chatLoading) return;
     setChatInput("");
     const history = [...chatMessages, { role: "user" as const, content: msg }];
     setChatMessages(history);
@@ -349,14 +388,34 @@ export default function VendorPortal() {
   }
 
 
-  async function upload(controlId: string, file: File) {
+  function upload(controlId: string, file: File) {
+    return doUpload(controlId, file, {});
+  }
+
+  // Core upload. On a 409 "needs_password"/"wrong_password" (encrypted document),
+  // opens the password prompt instead of failing — the vendor enters the document
+  // password (or chooses to attach it unread), and we retry.
+  async function doUpload(controlId: string, file: File, opts: { password?: string; attachUnreadable?: boolean }) {
     setUploading((s) => ({ ...s, [controlId]: true }));
     try {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("controlId", controlId);
+      if (opts.password) fd.append("password", opts.password);
+      if (opts.attachUnreadable) fd.append("attachUnreadable", "true");
       const res = await fetch("/api/upload", { method: "POST", body: fd });
+      if (res.status === 409) {
+        const data = await res.json().catch(() => ({}));
+        if (data.code === "needs_password" || data.code === "wrong_password") {
+          // Surface (or keep) the password prompt for this file.
+          setPwPrompt({ controlId, file, error: data.code === "wrong_password" ? data.error : undefined });
+          if (data.code === "wrong_password") toast.error(data.error);
+          return;
+        }
+        throw new Error(data.error || "Upload failed.");
+      }
       if (!res.ok) throw new Error(await errorMessage(res, "Upload failed."));
+      scrollRestoreRef.current = window.scrollY; // keep position (no jump-to-top)
       setSub((await res.json()).submission);
       setIncompleteFlags((m) => {
         if (!m.has(controlId)) return m;
@@ -364,7 +423,8 @@ export default function VendorPortal() {
         next.delete(controlId);
         return next;
       });
-      toast.success(`Uploaded ${file.name}`);
+      setPwPrompt(null);
+      toast.success(opts.attachUnreadable ? `Attached ${file.name} (not read — password not provided)` : `Uploaded ${file.name}`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Upload failed.");
     } finally {
@@ -467,6 +527,7 @@ export default function VendorPortal() {
         }
         throw new Error(await errorMessage(res, "Could not submit for review."));
       }
+      scrollRestoreRef.current = window.scrollY; // keep position (no jump-to-top)
       setSub(await res.json());
       setMissingReasons(new Set());
       setIncompleteFlags(new Set());
@@ -515,17 +576,36 @@ export default function VendorPortal() {
               <p className="text-sm text-muted">{answered} of {controls.length} complete · {submitted ? "submitted for review" : "draft"}{needsAttention > 0 && <span className="font-semibold text-danger"> · {needsAttention} returned for remediation</span>}</p>
               <SaveIndicator state={saveState} savedAt={savedAt} />
             </div>
-            <button
-              onClick={submitAll}
-              disabled={submitting || submitted || !allComplete}
-              title={!submitted && !allComplete ? "Complete all requirements to submit" : undefined}
-              className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white shadow-glow-sm transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {submitted ? <CheckCircle2 size={16} /> : <Send size={16} />}
-              {submitted ? "Submitted" : submitting ? "Submitting…" : "Submit for review"}
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              {!submitted && (
+                <button
+                  onClick={saveDraftNow}
+                  disabled={savingDraft || saveState === "saving"}
+                  title="Persist your current progress now"
+                  className="inline-flex items-center gap-2 rounded-xl border border-border px-4 py-2.5 text-sm font-semibold text-fg transition hover:border-brand/50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingDraft ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                  {savingDraft ? "Saving…" : "Save draft"}
+                </button>
+              )}
+              <button
+                onClick={submitAll}
+                disabled={submitting || submitted || !allComplete}
+                title={!submitted && !allComplete ? "Complete all requirements to submit" : undefined}
+                className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white shadow-glow-sm transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {submitted ? <CheckCircle2 size={16} /> : <Send size={16} />}
+                {submitted ? "Submitted" : submitting ? "Submitting…" : "Submit for review"}
+              </button>
+            </div>
           </div>
         </div>
+        {!submitted && (
+          <div className="mt-3 flex items-start gap-2 rounded-xl border border-border bg-surface-2/40 px-3 py-2 text-xs text-muted">
+            <Save size={13} className="mt-0.5 shrink-0 text-brand" />
+            <span>Your answers save automatically as you go. You can close this page and resume anytime — nothing is sent to the assessor until you click <span className="font-semibold text-fg">Submit for review</span>.</span>
+          </div>
+        )}
         <div className="mt-3 flex items-center justify-between">
           <span className="text-xs font-medium text-muted">{answered} / {controls.length} complete</span>
           <button
@@ -536,6 +616,9 @@ export default function VendorPortal() {
           </button>
         </div>
       </section>
+
+      {/* Assessment scope — assessor-defined, read-only, with request-change flow */}
+      <VendorScope />
 
       {/* Baseline questionnaire banner — vendors with no specific regulatory scope */}
       {questionnaireMode === "hygiene" && (
@@ -744,10 +827,10 @@ export default function VendorPortal() {
                               </div>
                               <button
                                 onClick={() => openChat(c.id)}
-                                title="Ask CompliQ for evidence guidance"
+                                title="Ask Vera for evidence guidance"
                                 className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-brand/30 bg-brand/5 px-2 py-1.5 text-[11px] font-semibold text-brand hover:bg-brand/10 transition"
                               >
-                                <MessageCircle size={11} /> Ask CompliQ
+                                <MessageCircle size={11} /> Ask Vera
                               </button>
                             </div>
 
@@ -926,7 +1009,46 @@ export default function VendorPortal() {
           );
         })}
       </div>
-      {/* CompliQ chat panel — slides in from bottom-right */}
+      {/* Password prompt for an encrypted uploaded document */}
+      {pwPrompt && (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/50 p-4 backdrop-blur-sm" onClick={() => { setPwPrompt(null); setPwValue(""); }} role="presentation">
+          <div onClick={(e) => e.stopPropagation()} className="glass w-full max-w-md rounded-2xl border border-border p-5">
+            <h3 className="flex items-center gap-2 text-base font-semibold"><Lock size={16} className="text-brand" /> Document is password-protected</h3>
+            <p className="mt-1 text-sm text-muted"><span className="font-medium text-fg">{pwPrompt.file.name}</span> can&apos;t be read without its password. Enter it so we can review the evidence.</p>
+            <form
+              onSubmit={(e) => { e.preventDefault(); if (pwValue) { const p = pwPrompt; setPwValue(""); doUpload(p.controlId, p.file, { password: pwValue }); } }}
+            >
+              <input
+                type="password"
+                autoFocus
+                value={pwValue}
+                onChange={(e) => setPwValue(e.target.value)}
+                placeholder="Document password"
+                className="mt-3 w-full rounded-xl border border-border bg-surface/60 px-3 py-2 text-sm outline-none focus:border-brand"
+              />
+              {pwPrompt.error && <p className="mt-1.5 text-xs text-danger">{pwPrompt.error}</p>}
+              <div className="mt-4 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => { const p = pwPrompt; setPwValue(""); doUpload(p.controlId, p.file, { attachUnreadable: true }); }}
+                  className="text-xs font-medium text-muted underline-offset-2 hover:text-fg hover:underline"
+                  title="Attach the file as-is; it won't be machine-readable for review"
+                >
+                  Attach without password
+                </button>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => { setPwPrompt(null); setPwValue(""); }} className="rounded-xl border border-border px-4 py-2 text-sm font-medium text-muted hover:text-fg">Cancel</button>
+                  <button type="submit" disabled={!pwValue || !!uploading[pwPrompt.controlId]} className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white shadow-glow-sm transition hover:brightness-110 disabled:opacity-60">
+                    {uploading[pwPrompt.controlId] ? <Loader2 size={15} className="animate-spin" /> : <UploadCloud size={15} />} Unlock &amp; upload
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Vera chat panel — slides in from bottom-right */}
       <AnimatePresence>
         {chatOpen && (
           <motion.div
@@ -941,19 +1063,33 @@ export default function VendorPortal() {
             <div className="flex items-center justify-between gap-2 border-b border-border bg-brand/10 px-4 py-3">
               <div className="flex items-center gap-2">
                 <MessageCircle size={16} className="text-brand" />
-                <span className="text-sm font-semibold text-brand">CompliQ</span>
+                <span className="text-sm font-semibold text-brand">Vera</span>
                 {chatControlId && <span className="rounded-md bg-brand/10 px-1.5 py-0.5 font-mono text-[10px] text-brand">{chatControlId}</span>}
               </div>
-              <button onClick={() => setChatOpen(false)} aria-label="Close CompliQ" className="grid h-7 w-7 place-items-center rounded-lg border border-border text-muted hover:text-fg"><X size={14} /></button>
+              <button onClick={() => setChatOpen(false)} aria-label="Close Vera" className="grid h-7 w-7 place-items-center rounded-lg border border-border text-muted hover:text-fg"><X size={14} /></button>
             </div>
 
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-3 space-y-3" style={{ minHeight: 180 }}>
               {chatMessages.length === 0 && (
-                <div className="text-center py-6 text-xs text-muted">
-                  <MessageCircle size={24} className="mx-auto mb-2 text-brand/40" />
-                  <p className="font-medium text-fg">Hi! I'm CompliQ.</p>
-                  <p className="mt-1">Ask me what evidence is typically needed for this control and I'll guide you.</p>
+                <div className="py-4 text-xs text-muted">
+                  <div className="text-center">
+                    <MessageCircle size={24} className="mx-auto mb-2 text-brand/40" />
+                    <p className="font-medium text-fg">Hi! I'm Vera.</p>
+                    <p className="mt-1">Your Virtual Evidence &amp; Risk Assistant. Ask me what evidence is typically needed for this control, or pick a prompt below.</p>
+                  </div>
+                  <div className="mt-3 flex flex-col gap-1.5">
+                    {VERA_PROMPTS.map((p) => (
+                      <button
+                        key={p}
+                        onClick={() => sendChat(p)}
+                        disabled={chatLoading}
+                        className="rounded-xl border border-border bg-surface/60 px-3 py-2 text-left text-[11px] text-fg transition hover:border-brand hover:text-brand disabled:opacity-60"
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
               {chatMessages.map((m, i) => (
@@ -989,7 +1125,7 @@ export default function VendorPortal() {
                   className="flex-1 resize-none rounded-xl border border-border bg-surface/60 px-3 py-2 text-xs outline-none focus:border-brand disabled:opacity-60"
                 />
                 <button
-                  onClick={sendChat}
+                  onClick={() => sendChat()}
                   disabled={chatLoading || !chatInput.trim()}
                   className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand text-white shadow-glow-sm transition hover:brightness-110 disabled:opacity-60"
                 >

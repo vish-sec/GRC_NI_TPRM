@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createVendor, updateVendorProfile, isValidEmail, type VendorProfile } from "@/lib/users";
+import { createVendor, updateVendorProfile, setAssessmentScope, isValidEmail, type VendorProfile } from "@/lib/users";
+import { sanitizeScope } from "@/lib/scope-sanitize";
 import { currentSession, can } from "@/lib/auth";
 import { computeTier } from "@/lib/risk";
 import { audit } from "@/lib/audit";
@@ -66,6 +67,29 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Onboarding failed." }, { status: 500 });
   }
   const vendorId = session.vendorId!;
+
+  // Assessment scope defined at onboarding (assessor-owned, versioned). This also
+  // re-derives the inherent-risk tier from the scope's risk parameters.
+  const scopeRaw = form.get("scope");
+  if (scopeRaw) {
+    try {
+      const parsed = JSON.parse(String(scopeRaw));
+      await setAssessmentScope(vendorId, sanitizeScope(parsed), s!.username);
+    } catch { /* scope is best-effort at onboarding; assessor can set it later */ }
+  }
+
+  // Assessment-scope source document — stored on the vendor for any engagement
+  // type (spreadsheet types allowed here since the assessor uploads it).
+  const SCOPE_DOC_EXT = new Set(["xlsx", "xls", "csv", "pdf", "docx", "txt", "md"]);
+  const sdoc = form.get("scopeDoc") as File | null;
+  if (sdoc) {
+    const bytes = Buffer.from(await sdoc.arrayBuffer());
+    const ext = (sdoc.name.split(".").pop() || "").toLowerCase();
+    if (bytes.length > 0 && bytes.length <= MAX_BYTES && SCOPE_DOC_EXT.has(ext)) {
+      const ref = await saveUpload(`${vendorId}/onboarding`, sdoc.name, bytes);
+      await updateVendorProfile(vendorId, { scopeDocFile: ref });
+    }
+  }
 
   // Existing vendor: store agreement + last audit report; seed prior-findings.
   let priorCount = 0;
