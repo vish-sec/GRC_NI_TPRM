@@ -24,6 +24,9 @@ export default function Home() {
           <Link href="/workflow" className="hidden text-sm text-muted hover:text-fg sm:block">
             Workflow
           </Link>
+          <Link href="/faq" className="hidden text-sm text-muted hover:text-fg sm:block">
+            FAQ
+          </Link>
           <Link href="/about" className="hidden text-sm text-muted hover:text-fg sm:block">
             Team
           </Link>
