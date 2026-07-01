@@ -14,7 +14,6 @@ import {
   RotateCcw,
   FileText,
   Sparkles,
-  Target,
 } from "lucide-react";
 import { LogoLockup } from "@/components/animated-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -131,7 +130,6 @@ export default function Onboard() {
   const formRef = useRef<HTMLFormElement>(null);
 
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((s) => ({ ...s, [k]: v }));
-  const setScope = <K extends keyof ScopeDraft>(k: K, v: ScopeDraft[K]) => setScopeDraft((s) => ({ ...s, [k]: v }));
 
   // Upload a scope sheet OR a contract/MSA → AI structures it → apply across the
   // risk-profile fields and the scope draft (assessor reviews + edits before submit).
@@ -257,6 +255,14 @@ export default function Onboard() {
     }
     if (showCsp && !f.csp.trim()) {
       toast.error("Please name the cloud service provider for a cloud / hybrid vendor.");
+      return;
+    }
+    if (regs.length === 0) {
+      toast.error("Select at least one applicable regulator (choose \"None\" if none apply).");
+      return;
+    }
+    if (isExisting && (!agreementRef.current?.files?.length || !lastAuditRef.current?.files?.length)) {
+      toast.error("Agreement/Contract/MSA and the last TPRM audit report are required for a re-assessment.");
       return;
     }
 
@@ -456,16 +462,18 @@ export default function Onboard() {
                     placeholder="At least 12 characters"
                   />
                 </Field>
-                <Field label="SPOC contact number">
+                <Field label="SPOC contact number" required>
                   <input
+                    required
                     value={f.spocPhone}
                     onChange={(e) => set("spocPhone", e.target.value)}
                     className={inputCls}
                     placeholder="+65 …"
                   />
                 </Field>
-                <Field label="Country">
+                <Field label="Country" required>
                   <input
+                    required
                     value={f.country}
                     onChange={(e) => set("country", e.target.value)}
                     className={inputCls}
@@ -483,8 +491,9 @@ export default function Onboard() {
                     placeholder="https://"
                   />
                 </Field>
-                <Field label="Service provided to the client" className="sm:col-span-2">
+                <Field label="Service provided to the client" required className="sm:col-span-2">
                   <textarea
+                    required
                     value={f.serviceDescription}
                     onChange={(e) => set("serviceDescription", e.target.value)}
                     rows={2}
@@ -551,7 +560,7 @@ export default function Onboard() {
             </Section>
 
             {/* Applicable regulators */}
-            <Section title="Applicable regulators">
+            <Section title="Applicable regulators" aside={<span className="text-danger">*</span>}>
               <div className="flex flex-wrap gap-2">
                 {REGULATORS.map((r) => {
                   const active = regs.includes(r);
@@ -615,52 +624,8 @@ export default function Onboard() {
               </div>
             </Section>
 
-            {/* Assessment scope — assessor-owned; defined here at onboarding. */}
-            <Section title="Assessment scope">
-              <p className="mb-3 flex items-start gap-2 rounded-xl border border-border bg-surface-2/40 px-3 py-2 text-xs text-muted">
-                <Target size={13} className="mt-0.5 shrink-0 text-brand" />
-                The risk-profile fields above also feed the scope. Use <span className="font-semibold text-fg">Upload document to auto-fill</span> at the top to populate these from a scope sheet or contract. Detailed lists can be refined later in the console.
-              </p>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="Assessment name">
-                  <input value={scopeDraft.name} onChange={(e) => setScope("name", e.target.value)} placeholder="2026 Annual TPRM" className={inputCls} />
-                </Field>
-                <Field label="Assessment type">
-                  <select value={scopeDraft.type} onChange={(e) => setScope("type", e.target.value)} className={inputCls}>
-                    {["Onboarding", "Annual", "Re-assessment", "Ad-hoc"].map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </Field>
-                <Field label="Connectivity / integration">
-                  <select value={scopeDraft.connectivity} onChange={(e) => setScope("connectivity", e.target.value as ScopeDraft["connectivity"])} className={inputCls}>
-                    <option value="">—</option>
-                    <option value="none">None</option>
-                    <option value="api">API</option>
-                    <option value="vpn">VPN</option>
-                    <option value="dedicated">Dedicated link</option>
-                  </select>
-                </Field>
-                <Field label="Data residency / regions">
-                  <input value={scopeDraft.regions} onChange={(e) => setScope("regions", e.target.value)} placeholder="India, Singapore" className={inputCls} />
-                </Field>
-                <Field label="Data types">
-                  <input value={scopeDraft.dataTypes} onChange={(e) => setScope("dataTypes", e.target.value)} placeholder="PII, Cardholder data, KYC" className={inputCls} />
-                </Field>
-                <Field label="Cross-border data transfer">
-                  <label className="flex h-[42px] items-center gap-2 text-sm text-fg">
-                    <input type="checkbox" checked={scopeDraft.crossBorderTransfer} onChange={(e) => setScope("crossBorderTransfer", e.target.checked)} className="accent-brand" />
-                    Data is transferred across borders
-                  </label>
-                </Field>
-              </div>
-              {(scopeDraft.services.length > 0 || scopeDraft.applications.length > 0 || scopeDraft.subcontractors.length > 0) && (
-                <p className="mt-2 text-xs text-muted">
-                  AI extracted: {scopeDraft.services.length} service(s), {scopeDraft.applications.length} application(s), {scopeDraft.subcontractors.length} subcontractor(s) — refine in the console after onboarding.
-                </p>
-              )}
-            </Section>
-
             {/* Documents — the assessment-scope document is stored on the vendor and
-                used to auto-fill the scope; contract & audit apply to existing vendors. */}
+                used to auto-fill the scope (fields refined later in the console); contract & audit apply to existing vendors. */}
             <Section title="Documents">
               <div className="grid gap-3 sm:grid-cols-2">
                 <FileField
@@ -669,11 +634,11 @@ export default function Onboard() {
                   accept=".xlsx,.xls,.csv,.pdf,.docx,.txt"
                   busy={scopeAutofilling}
                   onChange={(file) => { if (file) autofillScope(file); }}
-                  help="Excel / PDF / Word. Stored on the vendor and auto-fills the scope fields above (review before submitting)."
+                  help="Excel / PDF / Word. Stored on the vendor and used to derive the assessment scope — refine it in the console after onboarding."
                 />
-                {isExisting && <FileField label="Agreement / Contract / MSA" inputRef={agreementRef} help="Stored with the vendor record." />}
+                {isExisting && <FileField label="Agreement / Contract / MSA *" inputRef={agreementRef} required help="Required for re-assessment. Stored with the vendor record." />}
                 {isExisting && (
-                  <FileField label="Last TPRM audit report" inputRef={lastAuditRef} help="Parsed to pre-flag previously non-compliant requirements." />
+                  <FileField label="Last TPRM audit report *" inputRef={lastAuditRef} required help="Required for re-assessment. Parsed to pre-flag previously non-compliant requirements." />
                 )}
               </div>
             </Section>
@@ -801,13 +766,14 @@ function RadioCard({
   );
 }
 
-function FileField({ label, inputRef, accept = ".pdf,.doc,.docx,.txt,image/*", help, onChange, busy }: {
+function FileField({ label, inputRef, accept = ".pdf,.doc,.docx,.txt,image/*", help, onChange, busy, required }: {
   label: string;
   inputRef: React.RefObject<HTMLInputElement | null>;
   accept?: string;
   help?: React.ReactNode;
   onChange?: (file: File | null) => void;
   busy?: boolean;
+  required?: boolean;
 }) {
   return (
     <label className="block text-xs">
@@ -817,6 +783,7 @@ function FileField({ label, inputRef, accept = ".pdf,.doc,.docx,.txt,image/*", h
       <input
         ref={inputRef}
         type="file"
+        required={required}
         accept={accept}
         onChange={(e) => onChange?.(e.target.files?.[0] ?? null)}
         className="block w-full cursor-pointer rounded-xl border border-border bg-surface/60 px-3 py-2 text-xs text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-brand/15 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-brand hover:file:brightness-110"

@@ -21,10 +21,10 @@ Get it from **https://nodejs.org** (LTS). Check it: `node -v` (should print v20 
 
 ### 2. Get the code
 ```bash
-git clone https://github.com/VyshakhNaiR/TPRM.git
-cd TPRM/web
+git clone https://github.com/vish-sec/GRC_NI_TPRM.git
+cd GRC_NI_TPRM/web
 ```
-*(Or, if you received a zip: unzip it, then `cd TPRM/web`.)*
+*(Or, if you received a zip: unzip it, then `cd GRC_NI_TPRM/web`.)*
 
 ### 3. Install & run
 ```bash
