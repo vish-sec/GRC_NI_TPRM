@@ -11,7 +11,6 @@ import {
   ClipboardCheck,
   History,
   Layers,
-  FileSpreadsheet,
   BadgeCheck,
   ScanSearch,
   MessageSquareWarning,
@@ -143,24 +142,6 @@ const STAGES: Stage[] = [
   },
   {
     n: 5,
-    icon: FileSpreadsheet,
-    name: "Custom questionnaire",
-    purpose: "Bring your own questionnaire — auto-mapped to controls.",
-    intro:
-      "An assessor can upload their own questionnaire instead of relying only on built-in templates. The platform makes it assessable by mapping it onto the control library.",
-    points: [
-      "The assessor uploads their own questionnaire as Excel or CSV.",
-      "The platform auto-maps each question to existing controls, inheriting their MAS / RBI / SEBI mappings.",
-      "Questions with no match become assessable custom controls.",
-      "Mappings take effect only after the assessor reviews and confirms them.",
-    ],
-    why: "Custom questions still inherit regulatory mappings, so a bespoke questionnaire keeps the MAS / RBI / SEBI coverage examiners expect — nothing falls outside the framework.",
-    actor: "Assessor",
-    regs: ["MAS", "RBI", "SEBI"],
-    shot: { src: "/shots/customq.png", alt: "Uploading a custom questionnaire that is auto-mapped to controls" },
-  },
-  {
-    n: 6,
     icon: BadgeCheck,
     name: "Vendor response — certification-as-evidence",
     purpose: "Per requirement, the vendor proves the control — including via certifications.",
@@ -178,7 +159,7 @@ const STAGES: Stage[] = [
     shot: { src: "/shots/vendor.png", alt: "Vendor answering a requirement via certification, evidence or Not Applicable" },
   },
   {
-    n: 7,
+    n: 6,
     icon: ScanSearch,
     name: "Adjudication & assessor authority",
     purpose: "The engine judges what's claimed against what's proven; the assessor decides.",
@@ -196,7 +177,7 @@ const STAGES: Stage[] = [
     shot: { src: "/shots/console.png", alt: "Adjudication console showing verdicts, attestation source and assessor override" },
   },
   {
-    n: 8,
+    n: 7,
     icon: MessageSquareWarning,
     name: "Findings, remediation & feedback",
     purpose: "Findings go back to the vendor and the loop closes.",
@@ -213,7 +194,7 @@ const STAGES: Stage[] = [
     shot: { src: "/shots/console.png", alt: "Findings and remediation thread between assessor and vendor" },
   },
   {
-    n: 9,
+    n: 8,
     icon: Award,
     name: "Consolidated rating & approval",
     purpose: "A single rating routes the vendor to the right approver.",
@@ -231,7 +212,7 @@ const STAGES: Stage[] = [
     shot: { src: "/shots/portfolio.png", alt: "Consolidated portfolio rating and approval view" },
   },
   {
-    n: 10,
+    n: 9,
     icon: BellRing,
     name: "Compliance workspace",
     purpose: "Contracts, obligations, certs and custom compliances tracked in one place.",
@@ -249,7 +230,7 @@ const STAGES: Stage[] = [
     shot: { src: "/shots/compliance.png", alt: "Compliance workspace: clause checklist, obligations register and expiry reminders" },
   },
   {
-    n: 11,
+    n: 10,
     icon: Eye,
     name: "Customer holistic view",
     purpose: "A read-only, portfolio-wide window for bank stakeholders.",
@@ -267,7 +248,7 @@ const STAGES: Stage[] = [
     shot: { src: "/shots/customer.png", alt: "Customer read-only portfolio view with status, due dates and export" },
   },
   {
-    n: 12,
+    n: 11,
     icon: Settings2,
     name: "Root administration",
     purpose: "Platform governance: engine, users and audit.",
@@ -490,18 +471,13 @@ function StageSlide({ stage }: { stage: Stage }) {
   );
 }
 
-/** Supporting slide that surfaces the platform "extras" (cost + SBOM). */
+/** Supporting slide that surfaces the platform "extras" (cost efficiency). */
 function ExtrasSlide() {
   const extras: { shot: Shot; title: string; body: string }[] = [
     {
       shot: { src: "/shots/cost.png", alt: "AI cost efficiency dashboard" },
       title: "Cost-efficient AI",
       body: "Caching, model routing and batching keep adjudication economical without dropping rigour.",
-    },
-    {
-      shot: { src: "/shots/sbom.png", alt: "Software bill-of-materials view" },
-      title: "SBOM & supply-chain view",
-      body: "Software bill-of-materials surfaces 4th-party and component risk behind each vendor.",
     },
   ];
   return (
@@ -513,10 +489,9 @@ function ExtrasSlide() {
         </div>
         <h2 className="mt-2 text-xl font-bold leading-tight sm:text-2xl">Beyond the core lifecycle</h2>
         <p className="mt-1 max-w-2xl text-sm text-muted sm:text-base">
-          The same record powers cost-aware AI and supply-chain visibility — so oversight stays
-          affordable and reaches past the direct vendor.
+          The same record powers cost-aware AI — so oversight stays affordable at portfolio scale.
         </p>
-        <div className="mt-6 grid gap-6 sm:grid-cols-2">
+        <div className="mt-6 grid gap-6 sm:max-w-sm">
           {extras.map((e) => (
             <div key={e.title}>
               <BrowserFrame shot={e.shot} />
