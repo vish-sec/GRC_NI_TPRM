@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { currentSession, can } from "@/lib/auth";
-import { getSettings, saveSettings, maskSettings, CATEGORIES, LOCAL_PROVIDERS, INTEGRATED_PROVIDERS } from "@/lib/settings";
+import { getSettings, saveSettings, maskSettings, CATEGORIES, LOCAL_PROVIDERS, INTEGRATED_PROVIDERS, EMAIL_PROVIDERS } from "@/lib/settings";
 import { audit } from "@/lib/audit";
 import { readJson } from "@/lib/http";
 
@@ -11,6 +11,7 @@ const SETTINGS_ERR: Record<string, string> = {
   invalid_provider: "Invalid provider selection.",
   invalid_base_url: "The provider base URL is not a valid HTTP(S) URL.",
   private_base_url: "Private/loopback base URLs are not allowed for cloud providers in production.",
+  invalid_email_provider: "Invalid email provider selection.",
 };
 
 export async function GET() {
@@ -21,6 +22,7 @@ export async function GET() {
     categories: CATEGORIES,
     localProviders: LOCAL_PROVIDERS,
     integratedProviders: INTEGRATED_PROVIDERS,
+    emailProviders: EMAIL_PROVIDERS,
     canManage: can(s?.role, "settings:manage"),
   });
 }

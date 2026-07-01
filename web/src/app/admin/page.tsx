@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Cpu, Users, LogOut, Save, Check, Loader2, KeyRound, Server, Cloud, GitMerge, ScrollText, UserPlus, UserCog, X } from "lucide-react";
+import { Cpu, Users, LogOut, Save, Check, Loader2, KeyRound, Server, Cloud, GitMerge, ScrollText, UserPlus, UserCog, X, Mail } from "lucide-react";
 import { LogoLockup } from "@/components/animated-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ErrorState, Toaster, errorMessage, useToasts } from "@/components/ui";
@@ -29,7 +29,7 @@ export default function Admin() {
   const [masked, setMasked] = useState<any>(null);
   const [canManage, setCanManage] = useState(false);
   const [users, setUsers] = useState<any[]>([]);
-  const [tab, setTab] = useState<"processing" | "users" | "audit">("processing");
+  const [tab, setTab] = useState<"processing" | "email" | "users" | "audit">("processing");
   const [draft, setDraft] = useState<any>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -71,6 +71,7 @@ export default function Admin() {
           local: { provider: m.local.provider, ollama: { ...m.local.ollama }, claudecode: { ...m.local.claudecode } },
           integrated: { provider: m.integrated.provider, claude: { model: m.integrated.claude.model }, openai: { model: m.integrated.openai.model, baseUrl: m.integrated.openai.baseUrl }, grok: { model: m.integrated.grok.model, baseUrl: m.integrated.grok.baseUrl }, gemini: { model: m.integrated.gemini.model } },
           hybrid: { ...m.hybrid },
+          email: { provider: m.email.provider, fromAddress: m.email.fromAddress, fromName: m.email.fromName, smtp: { host: m.email.smtp.host, port: m.email.smtp.port, secure: m.email.smtp.secure, user: m.email.smtp.user } },
         });
         const usersRes = await fetch("/api/users");
         if (usersRes.ok && !cancelled) setUsers((await usersRes.json()).users);
@@ -150,6 +151,12 @@ export default function Admin() {
   function patchLocal(prov: string, field: string, val: string) {
     setDraft((d: any) => ({ ...d, local: { ...d.local, [prov]: { ...d.local[prov], [field]: val } } }));
   }
+  function patchEmail(field: string, val: any) {
+    setDraft((d: any) => ({ ...d, email: { ...d.email, [field]: val } }));
+  }
+  function patchSmtp(field: string, val: any) {
+    setDraft((d: any) => ({ ...d, email: { ...d.email, smtp: { ...d.email.smtp, [field]: val } } }));
+  }
 
   async function save() {
     setSaving(true);
@@ -206,6 +213,7 @@ export default function Admin() {
 
       <div className="mb-5 -mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
         <button onClick={() => setTab("processing")} className={cn("inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium", tab === "processing" ? "border-brand/50 bg-brand/10 text-fg" : "border-border text-muted")}><Cpu size={15} /> Processing engine</button>
+        <button onClick={() => setTab("email")} className={cn("inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium", tab === "email" ? "border-brand/50 bg-brand/10 text-fg" : "border-border text-muted")}><Mail size={15} /> Email</button>
         <button onClick={() => setTab("users")} className={cn("inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium", tab === "users" ? "border-brand/50 bg-brand/10 text-fg" : "border-border text-muted")}><Users size={15} /> Users & roles</button>
         <button onClick={() => setTab("audit")} className={cn("inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium", tab === "audit" ? "border-brand/50 bg-brand/10 text-fg" : "border-border text-muted")}><ScrollText size={15} /> Audit log</button>
       </div>
@@ -322,6 +330,41 @@ export default function Admin() {
               </button>
             )}
           </div>
+        </section>
+      )}
+
+      {tab === "email" && (
+        <section className="space-y-5">
+          <div className="glass rounded-2xl p-5">
+            <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold"><Mail size={15} /> Vendor reminder email</h3>
+            <p className="mb-4 text-xs text-muted">Root and Customer can send a vendor a "TPRM assessment upcoming/overdue" email from the portfolio view. Configure delivery here — off by default (sends are logged but not delivered until SMTP is set up).</p>
+            <Field label="Delivery">
+              <select disabled={!canManage} value={draft.email.provider} onChange={(e) => patchEmail("provider", e.target.value)} className={inputCls}>
+                {meta.emailProviders.map((p: any) => <option key={p.id} value={p.id}>{p.label}</option>)}
+              </select>
+            </Field>
+            {draft.email.provider === "smtp" && (
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <Field label="SMTP host"><input disabled={!canManage} value={draft.email.smtp.host} onChange={(e) => patchSmtp("host", e.target.value)} className={inputCls} placeholder="smtp.gmail.com" /></Field>
+                <Field label="Port"><input type="number" disabled={!canManage} value={draft.email.smtp.port} onChange={(e) => patchSmtp("port", Number(e.target.value))} className={inputCls} /></Field>
+                <Field label="SMTP user"><input disabled={!canManage} value={draft.email.smtp.user} onChange={(e) => patchSmtp("user", e.target.value)} className={inputCls} placeholder="you@example.com" /></Field>
+                <Field label="SMTP password">
+                  <input type="password" disabled={!canManage} placeholder={masked.email.smtp.keySet ? `saved ${masked.email.smtp.keyHint}` : "not set"} onChange={(e) => patchSmtp("pass", e.target.value)} className={inputCls} />
+                </Field>
+                <label className="flex items-center gap-2 text-xs sm:col-span-2"><input type="checkbox" disabled={!canManage} checked={draft.email.smtp.secure} onChange={(e) => patchSmtp("secure", e.target.checked)} /> Use TLS (port 465)</label>
+                <Field label="From address"><input disabled={!canManage} value={draft.email.fromAddress} onChange={(e) => patchEmail("fromAddress", e.target.value)} className={inputCls} placeholder="tprm@yourbank.com" /></Field>
+                <Field label="From name"><input disabled={!canManage} value={draft.email.fromName} onChange={(e) => patchEmail("fromName", e.target.value)} className={inputCls} placeholder="TPRM Platform" /></Field>
+              </div>
+            )}
+            <p className="mt-3 flex items-center gap-1.5 text-xs text-muted"><KeyRound size={12} /> The SMTP password is stored server-side, shown only as ••••last4, and never returned in full. Blank = keep existing.</p>
+          </div>
+          {canManage && (
+            <div className="flex items-center gap-3">
+              <button onClick={save} disabled={saving} className="ml-auto inline-flex items-center gap-2 rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-white shadow-glow-sm transition hover:brightness-110 disabled:opacity-60">
+                {saved ? <Check size={16} /> : saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}{saved ? "Saved" : saving ? "Saving…" : "Save configuration"}
+              </button>
+            </div>
+          )}
         </section>
       )}
 

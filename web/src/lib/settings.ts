@@ -12,6 +12,7 @@ const FILE = path.join(DIR, "settings.json");
 const VALID_CATEGORIES = new Set(["static", "local", "integrated", "hybrid"]);
 const VALID_LOCAL = new Set(["ollama", "claudecode"]);
 const VALID_INTEGRATED = new Set(["claude", "openai", "grok", "gemini"]);
+const VALID_EMAIL_PROVIDERS = new Set(["none", "smtp"]);
 
 // SSRF guard: a cloud-provider base URL must be public HTTP(S) in production.
 // (Ollama is a local provider — intentionally exempt, it lives on a private/
@@ -37,6 +38,7 @@ function assertSafeBaseUrl(raw: string): void {
 export type Category = "static" | "local" | "integrated" | "hybrid";
 export type LocalProvider = "ollama" | "claudecode";
 export type IntegratedProvider = "claude" | "openai" | "grok" | "gemini";
+export type EmailProvider = "none" | "smtp";
 
 export interface Settings {
   category: Category;
@@ -54,6 +56,14 @@ export interface Settings {
     gemini: { apiKey: string; model: string };
   };
   hybrid: { escalateCategory: "local" | "integrated"; threshold: number };
+  // Outbound email for vendor reminders (TPRM due/overdue). Off by default —
+  // sends are a safe no-op ("not_configured") until Root sets provider "smtp".
+  email: {
+    provider: EmailProvider;
+    fromAddress: string;
+    fromName: string;
+    smtp: { host: string; port: number; secure: boolean; user: string; pass: string };
+  };
   updatedAt: string;
 }
 
@@ -73,6 +83,10 @@ export const INTEGRATED_PROVIDERS: { id: IntegratedProvider; label: string; fiel
   { id: "openai", label: "OpenAI GPT", fields: ["apiKey", "model", "baseUrl"] },
   { id: "grok", label: "xAI Grok", fields: ["apiKey", "model", "baseUrl"] },
   { id: "gemini", label: "Google Gemini", fields: ["apiKey", "model"] },
+];
+export const EMAIL_PROVIDERS: { id: EmailProvider; label: string; desc: string }[] = [
+  { id: "none", label: "Off", desc: "Reminder sends are logged but not delivered." },
+  { id: "smtp", label: "SMTP", desc: "Send via any SMTP server (Gmail app password, SES SMTP, Resend, etc.)." },
 ];
 
 // Fresh defaults each call so `updatedAt` is current and nested objects are not
@@ -94,6 +108,18 @@ function defaults(): Settings {
       gemini: { apiKey: "", model: "gemini-2.5-flash" },
     },
     hybrid: { escalateCategory: "integrated", threshold: 0.75 },
+    email: {
+      provider: "none",
+      fromAddress: process.env.SMTP_FROM || "",
+      fromName: "TPRM Platform",
+      smtp: {
+        host: process.env.SMTP_HOST || "",
+        port: Number(process.env.SMTP_PORT) || 587,
+        secure: false,
+        user: process.env.SMTP_USER || "",
+        pass: process.env.SMTP_PASS || "",
+      },
+    },
     updatedAt: new Date().toISOString(),
   };
 }
@@ -110,6 +136,7 @@ export function getSettings(): Settings {
   // the spread or silently wipe keys.
   const si = s.integrated && typeof s.integrated === "object" ? s.integrated : {};
   const sl = s.local && typeof s.local === "object" ? s.local : {};
+  const se = s.email && typeof s.email === "object" ? s.email : {};
   const merged: Settings = {
     ...D, ...s,
     static: { ...D.static, ...(s.static || {}) },
@@ -122,11 +149,13 @@ export function getSettings(): Settings {
       gemini: { ...D.integrated.gemini, ...(si.gemini || {}) },
     },
     hybrid: { ...D.hybrid, ...(s.hybrid || {}) },
+    email: { ...D.email, ...se, smtp: { ...D.email.smtp, ...(se.smtp || {}) } },
   };
   // Decrypt API keys for use by the adjudicator (they're stored encrypted).
   for (const p of ["claude", "openai", "grok", "gemini"] as const) {
     merged.integrated[p].apiKey = decryptSecret(merged.integrated[p].apiKey);
   }
+  merged.email.smtp.pass = decryptSecret(merged.email.smtp.pass);
   return merged;
 }
 
@@ -177,6 +206,20 @@ export function saveSettings(patch: any): Settings {
       }
     }
   }
+  if (patch.email) {
+    const provider = patch.email.provider ?? cur.email.provider;
+    if (!VALID_EMAIL_PROVIDERS.has(provider)) throw new Error("invalid_email_provider");
+    next.email = { ...cur.email, provider };
+    if (patch.email.fromAddress !== undefined) next.email.fromAddress = String(patch.email.fromAddress || "");
+    if (patch.email.fromName !== undefined) next.email.fromName = String(patch.email.fromName || "");
+    if (patch.email.smtp) {
+      const incoming = { ...patch.email.smtp };
+      if (incoming.pass === "" || incoming.pass == null) delete incoming.pass; // never wipe a saved password with a blank
+      if (incoming.port !== undefined) incoming.port = Math.min(65535, Math.max(1, Number(incoming.port) || cur.email.smtp.port));
+      if (incoming.secure !== undefined) incoming.secure = !!incoming.secure;
+      next.email.smtp = { ...cur.email.smtp, ...incoming };
+    }
+  }
 
   // Encrypt API keys at rest. (cur keys are plaintext from getSettings; any new
   // key in the patch is plaintext too — encrypt all four on the way out.)
@@ -184,6 +227,7 @@ export function saveSettings(patch: any): Settings {
   for (const p of ["claude", "openai", "grok", "gemini"] as const) {
     toWrite.integrated[p].apiKey = encryptSecret(next.integrated[p].apiKey);
   }
+  toWrite.email.smtp.pass = encryptSecret(next.email.smtp.pass);
   fs.writeFileSync(FILE, JSON.stringify(toWrite, null, 2));
   return next; // return decrypted view to the caller (it masks before sending)
 }
@@ -202,6 +246,12 @@ export function maskSettings(s: Settings) {
       openai: { model: s.integrated.openai.model, baseUrl: s.integrated.openai.baseUrl, ...mask(s.integrated.openai.apiKey) },
       grok: { model: s.integrated.grok.model, baseUrl: s.integrated.grok.baseUrl, ...mask(s.integrated.grok.apiKey) },
       gemini: { model: s.integrated.gemini.model, ...mask(s.integrated.gemini.apiKey) },
+    },
+    email: {
+      provider: s.email.provider,
+      fromAddress: s.email.fromAddress,
+      fromName: s.email.fromName,
+      smtp: { host: s.email.smtp.host, port: s.email.smtp.port, secure: s.email.smtp.secure, user: s.email.smtp.user, ...mask(s.email.smtp.pass) },
     },
     updatedAt: s.updatedAt,
   };

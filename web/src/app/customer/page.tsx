@@ -14,6 +14,7 @@ import {
   Loader2,
   LogOut,
   Printer,
+  Send,
   X,
 } from "lucide-react";
 import { LogoLockup } from "@/components/animated-logo";
@@ -525,6 +526,8 @@ export default function CustomerPortfolio() {
   const { toasts, success, error, dismiss } = useToasts();
 
   const [rows, setRows] = useState<CustomerRow[] | null>(null);
+  const [role, setRole] = useState("");
+  const [notifying, setNotifying] = useState<string | null>(null);
   const [loadError, setLoadError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -549,6 +552,7 @@ export default function CustomerPortfolio() {
           router.push("/login");
           return;
         }
+        if (!cancelled) setRole(role);
         const res = await fetch("/api/customer");
         if (!res.ok) throw new Error(await errorMessage(res, "Could not load the portfolio."));
         const data = await res.json();
@@ -637,6 +641,24 @@ export default function CustomerPortfolio() {
   function closeDrill() {
     setOpenId(null);
     setDetail(null);
+  }
+
+  // Email a vendor that its TPRM assessment is upcoming/overdue (Root + Customer only).
+  async function sendReminder(vendorId: string) {
+    setNotifying(vendorId);
+    try {
+      const res = await fetch("/api/notify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vendorId }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d?.error || "Could not send the reminder.");
+      if (d.sent) success("Reminder emailed to the vendor.");
+      else if (d.reason === "no_contacts") error("This vendor has no contact email on file yet.");
+      else if (d.reason === "not_configured") error("Email delivery isn't configured yet — set it up under Admin → Email.");
+      else error("The reminder could not be delivered.");
+    } catch (e) {
+      error(e instanceof Error ? e.message : "Could not send the reminder.");
+    } finally {
+      setNotifying(null);
+    }
   }
 
   // exports
@@ -828,6 +850,7 @@ export default function CustomerPortfolio() {
                     <th className="px-3 py-2 text-muted">Regulators</th>
                     <th className="px-3 py-2 text-muted">TPRM initiated</th>
                     <SortHeader label="Next due" col="nextDueAt" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+                    {(role === "customer" || role === "root") && <th className="px-3 py-2 text-muted">Notify</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -867,6 +890,19 @@ export default function CustomerPortfolio() {
                           <DueBadge row={r} />
                         </div>
                       </td>
+                      {(role === "customer" || role === "root") && (
+                        <td className="px-3 py-3">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); sendReminder(r.vendorId); }}
+                            disabled={notifying === r.vendorId}
+                            title="Email the vendor that their TPRM assessment is upcoming/overdue"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted transition hover:border-brand/40 hover:text-fg disabled:opacity-50"
+                          >
+                            {notifying === r.vendorId ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+                            Remind
+                          </button>
+                        </td>
+                      )}
                     </motion.tr>
                   ))}
                 </tbody>

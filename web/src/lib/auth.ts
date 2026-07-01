@@ -32,19 +32,22 @@ export type Permission =
   | "vendor:contacts:manage" // add/list a vendor's login accounts (SPOCs) — assessor-scoped
   | "settings:read"
   | "settings:manage"
-  | "audit:read";
+  | "audit:read"
+  | "notify:send"; // email a vendor that their TPRM assessment is upcoming/overdue — root + customer only
 
 const MATRIX: Record<Role, Permission[]> = {
   root: [
     "submission:read:own", "submission:write:own", "submission:read:all",
     "verdict:override", "adjudicate:run",
     "users:read", "users:manage", "vendor:contacts:manage", "settings:read", "settings:manage", "audit:read",
+    "notify:send",
   ],
   assessor: ["submission:read:all", "verdict:override", "adjudicate:run", "vendor:contacts:manage", "audit:read"],
   vendor: ["submission:read:own", "submission:write:own"],
   // Customer: read-only holistic consumer (bank stakeholder). Sees the portfolio
   // of vendors + per-requirement compliance detail; no write, no admin/settings.
-  customer: ["submission:read:all"],
+  // Exception: may trigger due/overdue reminder emails to a vendor.
+  customer: ["submission:read:all", "notify:send"],
 };
 
 export function can(role: Role | undefined, perm: Permission): boolean {
