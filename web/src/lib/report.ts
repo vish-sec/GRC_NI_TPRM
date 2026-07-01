@@ -20,8 +20,14 @@ export interface ReportControl {
 
 export interface VendorReport {
   vendorName: string;
-  generatedAt: string; // caller passes a formatted timestamp (client-side)
+  generatedAt: string; // when this export was produced (caller passes a formatted timestamp, client-side)
+  assessmentDate?: string; // when the assessment itself was last actioned by the assessor — the meaningful "report date"
+  assessorName?: string; // assessor of record for this vendor
   scope?: {
+    name?: string;
+    type?: string;
+    periodStart?: string;
+    periodEnd?: string;
     applications?: { name: string }[];
     services?: { name: string }[];
     subcontractors?: { name: string }[];
@@ -63,6 +69,14 @@ export function reportHtml(r: VendorReport): string {
   const reg = r.profile?.regulators?.length ? r.profile.regulators.join(", ") : "None";
   const infra = [r.profile?.infraType, r.profile?.csp].filter(Boolean).join(" · ") || "—";
   const cap = (s?: string) => (s ? s[0].toUpperCase() + s.slice(1) : "");
+  const scopeSummary = [
+    r.scope?.type,
+    r.scope?.periodStart && r.scope?.periodEnd ? `Period ${r.scope.periodStart} – ${r.scope.periodEnd}` : undefined,
+    r.scope?.businessCriticality ? `${cap(r.scope.businessCriticality)} criticality` : undefined,
+    infra !== "—" ? infra : undefined,
+  ]
+    .filter(Boolean)
+    .join(" · ") || "—";
   const scopeRow = (label: string, value?: string) =>
     value ? `<div class="scope-row"><span class="scope-label">${esc(label)}</span><span>${esc(value)}</span></div>` : "";
   const scopeItems = (label: string, items?: { name: string }[]) =>
@@ -123,7 +137,10 @@ export function reportHtml(r: VendorReport): string {
   ${r.confidential ? `<div class="watermark"><span>CONFIDENTIAL</span></div>` : ""}
   ${r.confidential ? `<div class="confidential-bar">CONFIDENTIAL — RESTRICTED DISTRIBUTION</div><br/>` : ""}
   <h1>${esc(r.vendorName)}</h1>
-  <div class="sub">Third-Party Risk Assessment Report · Generated ${esc(r.generatedAt)}</div>
+  <div class="sub">Third-Party Risk Assessment Report</div>
+  <div class="scope-row"><span class="scope-label">Report date</span><span>${esc(r.assessmentDate || r.generatedAt)}</span></div>
+  <div class="scope-row"><span class="scope-label">Assessor</span><span>${esc(r.assessorName || "—")}</span></div>
+  <div class="scope-row"><span class="scope-label">Scope summary</span><span>${esc(scopeSummary)}</span></div>
 
   <div class="cards">
     <div class="card"><div class="n">${r.summary.assessed}</div><div class="l">Assessed</div></div>
@@ -160,7 +177,7 @@ export function reportHtml(r: VendorReport): string {
     <tbody>${rows || `<tr><td colspan="5" class="muted">No controls assessed.</td></tr>`}</tbody>
   </table>
 
-  <div class="footer">This report reflects the assessment state at generation time. Assessor overrides are the final authority on any control verdict.${r.confidential ? " This document is marked CONFIDENTIAL — apply password protection / access controls before distributing externally." : ""}</div>
+  <div class="footer">This report reflects the assessment state as of ${esc(r.assessmentDate || r.generatedAt)} · exported ${esc(r.generatedAt)}. Assessor overrides are the final authority on any control verdict.${r.confidential ? " This document is marked CONFIDENTIAL — apply password protection / access controls before distributing externally." : ""}</div>
 </body></html>`;
 }
 
@@ -182,7 +199,13 @@ export function exportReportExcel(r: VendorReport): void {
     XLSX.utils.json_to_sheet([
       {
         Vendor: r.vendorName,
-        "Generated": r.generatedAt,
+        "Report Date": r.assessmentDate || r.generatedAt,
+        Assessor: r.assessorName || "—",
+        Exported: r.generatedAt,
+        "Scope Name": r.scope?.name || "—",
+        "Scope Type": r.scope?.type || "—",
+        "Scope Period": r.scope?.periodStart && r.scope?.periodEnd ? `${r.scope.periodStart} – ${r.scope.periodEnd}` : "—",
+        "Business Criticality": r.scope?.businessCriticality || "—",
         "Assessed Controls": r.summary.assessed,
         Compliant: r.summary.compliant,
         "Non-Compliant": r.summary.nc,

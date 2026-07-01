@@ -43,6 +43,7 @@ export default function Console() {
   const [vendors, setVendors] = useState<{ vendorId: string; name: string; answered: number; total: number; status: string; profile?: VendorReport["profile"] }[]>([]);
   const [vendorId, setVendorId] = useState("apex");
   const [submission, setSubmission] = useState<any>(null);
+  const [assessorName, setAssessorName] = useState("");
   const [loadError, setLoadError] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
@@ -106,6 +107,7 @@ export default function Console() {
         const role = me.session?.role;
         if (role !== "assessor" && role !== "root") { router.push("/login"); return; }
         if (role === "root") { router.replace("/admin"); return; }
+        if (!cancelled) setAssessorName(me.session?.name || me.session?.username || "");
         const r = await fetch("/api/vendors");
         if (!r.ok) throw new Error(await errorMessage(r, "Could not load the vendor list."));
         if (!cancelled) { setVendors((await r.json()).vendors); setLoaded(true); }
@@ -384,9 +386,14 @@ export default function Console() {
   // Assemble the shared per-vendor report payload from current console state.
   function buildReport(): VendorReport {
     const profile = vendors.find((v) => v.vendorId === vendorId)?.profile as VendorReport["profile"] | undefined;
+    // "Report date" reflects when the assessment was actually last worked (submission/overrides),
+    // not the moment this export is downloaded — the export timestamp is kept separately as generatedAt.
+    const lastActioned = submission?.updatedAt || submission?.submittedAt;
     return {
       vendorName: selectedVendorName,
       generatedAt: new Date().toLocaleString("en-GB"),
+      assessmentDate: lastActioned ? new Date(lastActioned).toLocaleString("en-GB") : new Date().toLocaleString("en-GB"),
+      assessorName: assessorName || "—",
       scope: vendorScope,
       profile: profile ?? null,
       summary: { assessed: summary.assessed, compliant: summary.compliant, nc: summary.nc, na: summary.na, posture: summary.posture },
